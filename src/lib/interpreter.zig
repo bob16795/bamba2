@@ -25,9 +25,12 @@ pub const Interpreter = struct {
         ConstString,
         IntType,
         RealType,
+        PtrType,
         FunctionType,
         FunctionData,
         Value,
+        Ptr,
+        Prop,
         Struct,
         Builtin,
     };
@@ -52,6 +55,13 @@ pub const Interpreter = struct {
             val: *const llvm.Value,
             kind: *const Value,
         },
+        Ptr: struct {
+            val: *const llvm.Value,
+            kind: *const Value,
+        },
+        PtrType: struct {
+            child: *const Value,
+        },
         IntType: u32,
         RealType: u34,
         FunctionType: struct {
@@ -68,9 +78,14 @@ pub const Interpreter = struct {
             ext: bool,
         },
         Struct: struct {
+            kind: *const llvm.Type,
             values: std.StringHashMap(InterpreterNode),
             context: InterpreterContext,
             parent: ?*Value,
+        },
+        Prop: struct {
+            idx: usize,
+            kind: *Value,
         },
         Builtin: Builtin,
 
@@ -89,7 +104,7 @@ pub const Interpreter = struct {
 
         pub fn setTo(self: *const Value, parent: *Interpreter, value: *const Value) !Value {
             switch (self.*) {
-                .Value => |val| {
+                .Ptr => |val| {
                     if (value.* != .Value) return error.InvalidAssign;
                     // TODO: check type
                     _ = parent.builder.buildStore(val.val, value.Value.val);
@@ -107,7 +122,12 @@ pub const Interpreter = struct {
         }
         pub fn getValue(self: *const Value, parent: *Interpreter) ?*const llvm.Value {
             switch (self.*) {
-                .Value => |v| return v.val,
+                .Value => |v| {
+                    return v.val;
+                },
+                .Ptr => |v| {
+                    return parent.builder.buildLoad(v.kind.getType(parent) orelse unreachable, v.val, "load");
+                },
                 .ConstString => |s| {
                     if (parent.strings.getPtr(s)) |res| return res.Value.val;
                     var adds = parent.context.constString(s.ptr, @intCast(c_uint, s.len), .False);
@@ -123,6 +143,7 @@ pub const Interpreter = struct {
         pub fn getType(self: *const Value, parent: *Interpreter) ?*const llvm.Type {
             switch (self.*) {
                 .IntType => |t| return parent.context.intType(t),
+                .Struct => |t| return t.kind,
                 .Builtin => |b| {
                     switch (b) {
                         .VoidType => return parent.context.voidType(),
@@ -228,6 +249,7 @@ pub const Interpreter = struct {
                             .current = root,
                         },
                         .parent = null,
+                        .kind = undefined,
                     },
                 },
             },
@@ -285,6 +307,8 @@ pub const Interpreter = struct {
                                     //result.* = .{ .Visited = target.Visited.parent.?.Struct.values.get(child) orelse return error.NotFound };
                                     //return result;
                                 }
+
+                                std.log.info("child {s}", .{child});
                                 return error.NotFound;
                             };
                         },
@@ -292,7 +316,9 @@ pub const Interpreter = struct {
                     }
                 },
             }
-        } else return try self.getNode(self.root, child);
+        } else {
+            return try self.getNode(self.root, child);
+        }
     }
 
     pub fn visitStmt(self: *Self, stmt: parser.Statement, ctx: *InterpreterContext) InterpreterError!?Value {
@@ -410,14 +436,46 @@ pub const Interpreter = struct {
                     .Access => {
                         var root = try self.allocator.create(Value);
                         root.* = try self.visitExpr(values[0], ctx);
-
-                        return (try self.visitNode(root.Struct.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value;
+                        switch (root.*) {
+                            .Struct => return (try self.visitNode(root.Struct.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value,
+                            .Value => |val| {
+                                switch (val.kind.*) {
+                                    .Struct => {
+                                        return error.DumnDev;
+                                    },
+                                    else => return error.NotFound,
+                                }
+                            },
+                            .Ptr => |val| {
+                                std.log.info("{s}", .{@tagName(val.kind.*)});
+                                return error.DumnDev;
+                            },
+                            else => return error.NotFound,
+                        }
                     },
                     .Assign => {
                         var assignee = try self.visitExpr(values[0], ctx);
                         var value = try self.visitExpr(values[1], ctx);
 
                         return try assignee.setTo(self, &value);
+                    },
+                    .Ref => {
+                        var value = try self.allocator.create(Value);
+                        value.* = try self.visitExpr(values[0], ctx);
+
+                        var kind = try self.allocator.create(Value);
+                        kind.* = .{
+                            .PtrType = .{
+                                .child = value.Ptr.kind,
+                            },
+                        };
+
+                        return .{
+                            .Value = .{
+                                .val = value.Ptr.val,
+                                .kind = kind,
+                            },
+                        };
                     },
                     else => {
                         std.log.debug("visit {}", .{expr});
@@ -536,13 +594,41 @@ pub const Interpreter = struct {
                                 .values = std.StringHashMap(InterpreterNode).init(self.allocator),
                                 .context = try ctx.dupe(root),
                                 .parent = &ctx.current.Visited.value,
+                                .kind = self.context.voidType(),
                             },
                         },
                         .parent = &ctx.current.Visited.value,
                     },
                 };
 
+                try root.Visited.value.Struct.context.locals.put("Self", root.Visited.value);
+
+                var propIdx: usize = 0;
+                var props = std.ArrayList(*const llvm.Type).init(self.allocator);
+                defer props.deinit();
+
                 for (cls.body) |*def| {
+                    if (def.value.data == .Prop) {
+                        var kind = try self.allocator.create(Value);
+                        kind.* = try self.visitExpr(def.value.data.Prop.kind.*, ctx);
+
+                        try root.Visited.value.Struct.values.put(def.name, .{
+                            .Visited = .{
+                                .value = .{
+                                    .Prop = .{
+                                        .idx = propIdx,
+                                        .kind = kind,
+                                    },
+                                },
+                                .parent = &root.Visited.value,
+                            },
+                        });
+
+                        try props.append(kind.getType(self) orelse return error.InvalidType);
+
+                        propIdx += 1;
+                        continue;
+                    }
                     try root.Visited.value.Struct.values.put(def.name, .{
                         .Unvisited = .{
                             .value = &def.value,
@@ -550,17 +636,20 @@ pub const Interpreter = struct {
                         },
                     });
                 }
+                root.Visited.value.Struct.kind = self.context.structType(props.items.ptr, @intCast(c_uint, props.items.len), .False);
 
                 return root.Visited.value;
             },
             .Create => |create| {
                 if (ctx.function == null) return error.InvalidNew;
-                var kind = try self.visitExpr(create.kind.*, ctx);
+                var kind = try self.allocator.create(Value);
+                kind.* = try self.visitExpr(create.kind.*, ctx);
+
                 var lKind = kind.getType(self) orelse return error.InvalidType;
                 return .{
-                    .Value = .{
+                    .Ptr = .{
                         .val = self.builder.buildAlloca(lKind, "value"),
-                        .kind = &kind,
+                        .kind = kind,
                     },
                 };
             },

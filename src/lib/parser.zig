@@ -28,6 +28,7 @@ pub const Expression = struct {
         Operation,
         Struct,
         Paren,
+        Prop,
         Proc,
     };
 
@@ -51,6 +52,7 @@ pub const Expression = struct {
         // unary
         BitNot,
         Deref,
+        Ref,
         Neg,
 
         // unknown
@@ -85,6 +87,9 @@ pub const Expression = struct {
             body: ?[]Statement,
             ext: bool = false,
         },
+        Prop: struct {
+            kind: *Expression,
+        },
         Struct: struct {
             body: []Definition,
         },
@@ -105,6 +110,9 @@ pub const Expression = struct {
         _ = fmt;
 
         switch (self.data) {
+            .Prop => |data| {
+                try writer.print("P[{}]", .{data.kind});
+            },
             .ConstInt => |data| {
                 try writer.print("#{}", .{data.value});
             },
@@ -400,6 +408,21 @@ pub const Parser = struct {
                         .col = self.current.col,
                     };
                 },
+                .PROP => {
+                    try self.advance();
+                    var kind = try self.allocator.create(Expression);
+                    kind.* = try self.parseExpression(.Or);
+
+                    return .{
+                        .data = .{
+                            .Prop = .{
+                                .kind = kind,
+                            },
+                        },
+                        .line = self.current.line,
+                        .col = self.current.col,
+                    };
+                },
                 .VAR => {
                     try self.advance();
                     var kind = try self.allocator.create(Expression);
@@ -649,6 +672,23 @@ pub const Parser = struct {
         } else if (level == .Unary) {
             const next = @intToEnum(ExpressionLevel, @enumToInt(level) + 1);
             switch (self.current.kind) {
+                .AMPERSAND => {
+                    try self.advance();
+
+                    var values = try self.allocator.alloc(Expression, 1);
+                    values[0] = try self.parseExpression(next);
+
+                    return .{
+                        .data = .{
+                            .Operation = .{
+                                .op = .Ref,
+                                .values = values,
+                            },
+                        },
+                        .line = self.current.line,
+                        .col = self.current.col,
+                    };
+                },
                 .STAR => {
                     try self.advance();
 

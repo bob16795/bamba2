@@ -1,6 +1,4 @@
-def printf: extfn -> void;
-
-def mainBuilder: fn good val -> (fn -> i32) {
+def getMain: fn good val -> (fn -> i32) {
     if (good) {
         return fn -> i32 {
             def a: new i32 = i32(val);
@@ -12,4 +10,4 @@ def mainBuilder: fn good val -> (fn -> i32) {
     }
 }
 
-def main: mainBuilder(true, 0);
+def main: getMain(true, 0);
