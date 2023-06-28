@@ -1,0 +1,5 @@
+zig-*
+ir
+**/*.o
+a.out
+tmp

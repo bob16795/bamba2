@@ -1,0 +1,15 @@
+def printf: extfn -> void;
+
+def mainBuilder: fn good val -> (fn -> i32) {
+    if (good) {
+        return fn -> i32 {
+            def a: new i32 = i32(val);
+
+            return a;
+        }
+    } else {
+        ERROR("Expected true");
+    }
+}
+
+def main: mainBuilder(true, 0);
