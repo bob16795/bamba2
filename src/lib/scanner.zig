@@ -86,7 +86,7 @@ pub const Scanner = struct {
     }
 
     fn isAtEnd(self: *Self) bool {
-        const curr_len = @ptrToInt(self.current) - @ptrToInt(self.src.ptr);
+        const curr_len = @intFromPtr(self.current) - @intFromPtr(self.src.ptr);
         return curr_len >= self.src.len;
     }
 
@@ -165,6 +165,7 @@ pub const Scanner = struct {
         if (eql(u8, lexeme, "fn")) return .PROC;
         if (eql(u8, lexeme, "prop")) return .PROP;
         if (eql(u8, lexeme, "else")) return .ELSE;
+        if (eql(u8, lexeme, "fdef")) return .FORCE;
         if (eql(u8, lexeme, "def")) return .DEF;
         if (eql(u8, lexeme, "new")) return .VAR;
         if (eql(u8, lexeme, "if")) return .IF;
@@ -173,7 +174,7 @@ pub const Scanner = struct {
     }
 
     fn currentLexeme(self: *Self) []const u8 {
-        const end = @ptrToInt(self.current) - @ptrToInt(self.start);
+        const end = @intFromPtr(self.current) - @intFromPtr(self.start);
         return self.start[0..end];
     }
 
@@ -253,6 +254,7 @@ pub const Scanner = struct {
         INLINE,
         STRUCT,
         IMPORT,
+        FORCE,
         EMBED,
         CONST,
         WHILE,

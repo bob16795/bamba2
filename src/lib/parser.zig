@@ -1,7 +1,7 @@
 const std = @import("std");
 const scanner = @import("scanner.zig");
 
-const parserError = error{
+pub const parserError = error{
     InvalidChar,
     OutOfMemory,
     ExpectedDef,
@@ -26,13 +26,14 @@ pub const Expression = struct {
         Ident,
         Create,
         Operation,
+        Include,
         Struct,
         Paren,
         Prop,
         Proc,
     };
 
-    const Operation = enum {
+    pub const Operation = enum {
         // binary
         BitAnd,
         BitOr,
@@ -61,6 +62,11 @@ pub const Expression = struct {
         Call,
     };
 
+    pub const FunctionInput = struct {
+        name: []const u8,
+        kind: ?*Expression,
+    };
+
     data: union(ExpressionKind) {
         ConstInt: struct {
             value: usize,
@@ -82,7 +88,7 @@ pub const Expression = struct {
             values: []Expression,
         },
         Proc: struct {
-            in: [][]const u8,
+            in: []FunctionInput,
             out: *Expression,
             body: ?[]Statement,
             ext: bool = false,
@@ -91,11 +97,13 @@ pub const Expression = struct {
             kind: *Expression,
         },
         Struct: struct {
+            inherit: []Expression,
             body: []Definition,
         },
         Paren: struct {
             expr: *Expression,
         },
+        Include: []const u8,
     },
     line: usize,
     col: usize,
@@ -110,6 +118,9 @@ pub const Expression = struct {
         _ = fmt;
 
         switch (self.data) {
+            .Include => |data| {
+                try writer.print("Import \"{s}\"", .{data});
+            },
             .Prop => |data| {
                 try writer.print("P[{}]", .{data.kind});
             },
@@ -156,7 +167,10 @@ pub const Expression = struct {
             .Proc => |data| {
                 _ = try writer.write("proc");
                 for (data.in) |item| {
-                    try writer.print(" {s}", .{item});
+                    try writer.print(" {s}", .{item.name});
+                    if (item.kind) |kind| {
+                        try writer.print("({})", .{kind});
+                    }
                 }
                 try writer.print(" -> {}", .{data.out});
                 if (data.body) |body| {
@@ -285,6 +299,8 @@ pub const Definition = struct {
     name: []const u8,
     value: Expression,
 
+    force: bool,
+
     pub fn format(
         self: Definition,
         comptime fmt: []const u8,
@@ -384,12 +400,20 @@ pub const Parser = struct {
                 .EXTERN => {
                     try self.advance();
 
-                    var in = try self.allocator.alloc([]const u8, 0);
+                    var in = try self.allocator.alloc(Expression.FunctionInput, 0);
 
                     while (!try self.match(.ARROW)) {
                         in = try self.allocator.realloc(in, in.len + 1);
-                        in[in.len - 1] = self.current.lexeme;
-                        try self.advance();
+                        in[in.len - 1] = .{
+                            .name = self.current.lexeme,
+                            .kind = null,
+                        };
+
+                        if (try self.match(.LEFT_BRACKET)) {
+                            var kind = try self.allocator.create(Expression);
+                            kind.* = try self.parseExpression(.Assignment);
+                            in[in.len - 1].kind = kind;
+                        }
                     }
 
                     var out = try self.allocator.create(Expression);
@@ -441,12 +465,23 @@ pub const Parser = struct {
                 .PROC => {
                     try self.advance();
 
-                    var in = try self.allocator.alloc([]const u8, 0);
+                    var in = try self.allocator.alloc(Expression.FunctionInput, 0);
 
                     while (!try self.match(.ARROW)) {
                         in = try self.allocator.realloc(in, in.len + 1);
-                        in[in.len - 1] = self.current.lexeme;
+                        in[in.len - 1] = .{
+                            .name = self.current.lexeme,
+                            .kind = null,
+                        };
+
                         try self.advance();
+
+                        if (try self.match(.LEFT_BRACKET)) {
+                            var kind = try self.allocator.create(Expression);
+                            kind.* = try self.parseExpression(.Assignment);
+                            in[in.len - 1].kind = kind;
+                            if (!try self.match(.RIGHT_BRACKET)) return error.ExpectedParen;
+                        }
                     }
 
                     var out = try self.allocator.create(Expression);
@@ -487,15 +522,23 @@ pub const Parser = struct {
                 .STRUCT => {
                     try self.advance();
 
-                    if (!try self.match(.LEFT_BRACE)) return .{
-                        .data = .{
-                            .Ident = .{
-                                .name = "class",
-                            },
-                        },
-                        .line = self.current.line,
-                        .col = self.current.col,
-                    };
+                    var params = try self.allocator.alloc(Expression, 0);
+
+                    if (try self.match(.LEFT_PAREN)) {
+                        while (!try self.match(.RIGHT_PAREN)) {
+                            var param = try self.parseExpression(.Assignment);
+                            params = try self.allocator.realloc(params, params.len + 1);
+
+                            params[params.len - 1] = param;
+
+                            if (!try self.match(.COMMA)) {
+                                if (!try self.match(.RIGHT_PAREN)) return error.ExpectedParen;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!try self.match(.LEFT_BRACE)) return error.ExpectedBrace;
 
                     var body = try self.allocator.alloc(Definition, 0);
 
@@ -508,6 +551,7 @@ pub const Parser = struct {
                     return .{
                         .data = .{
                             .Struct = .{
+                                .inherit = params,
                                 .body = body,
                             },
                         },
@@ -519,12 +563,7 @@ pub const Parser = struct {
                     try self.advance();
 
                     if (try self.match(.LEFT_BRACKET)) {
-                        var kind = try self.parseExpression(.Assignment);
-
-                        if (!try self.match(.COLON)) return error.ExpectedColon;
-
-                        var params = try self.allocator.alloc(Expression, 1);
-                        params[0] = kind;
+                        var params = try self.allocator.alloc(Expression, 0);
 
                         while (!try self.match(.RIGHT_BRACKET)) {
                             var param = try self.parseExpression(.Assignment);
@@ -660,6 +699,32 @@ pub const Parser = struct {
                         .col = self.current.col,
                     };
                 },
+                .EMBED => blk: {
+                    try self.advance();
+
+                    const conts = std.fs.cwd().readFileAlloc(self.allocator, self.current.lexeme, 10000) catch return error.FileError;
+
+                    break :blk .{
+                        .data = .{
+                            .ConstString = .{
+                                .value = conts,
+                            },
+                        },
+                        .line = self.current.line,
+                        .col = self.current.col,
+                    };
+                },
+                .IMPORT => blk: {
+                    try self.advance();
+
+                    break :blk .{
+                        .data = .{
+                            .Include = self.current.lexeme,
+                        },
+                        .line = self.current.line,
+                        .col = self.current.col,
+                    };
+                },
                 else => {
                     std.log.info("{s}", .{@tagName(self.current.kind)});
                     return error.InvalidChar;
@@ -670,7 +735,7 @@ pub const Parser = struct {
 
             return result;
         } else if (level == .Unary) {
-            const next = @intToEnum(ExpressionLevel, @enumToInt(level) + 1);
+            const next = @as(ExpressionLevel, @enumFromInt(@intFromEnum(level) + 1));
             switch (self.current.kind) {
                 .AMPERSAND => {
                     try self.advance();
@@ -727,7 +792,7 @@ pub const Parser = struct {
             }
         }
 
-        const next = @intToEnum(ExpressionLevel, @enumToInt(level) + 1);
+        const next = @as(ExpressionLevel, @enumFromInt(@intFromEnum(level) + 1));
 
         var result = try self.parseExpression(next);
 
@@ -881,6 +946,16 @@ pub const Parser = struct {
                     },
                 };
             },
+            .FORCE => {
+                var def = try self.allocator.create(Definition);
+                def.* = try self.parseDef();
+
+                return .{
+                    .data = .{
+                        .Definition = def,
+                    },
+                };
+            },
             .RET => {
                 try self.advance();
 
@@ -915,12 +990,16 @@ pub const Parser = struct {
 
                 var body = try self.allocator.alloc(Statement, 0);
 
-                if (!try self.match(.LEFT_BRACE)) return error.ExpectedBrace;
-
-                while (!try self.match(.RIGHT_BRACE)) {
+                if (!try self.match(.LEFT_BRACE)) {
                     var stmt = try self.parseStatement();
                     body = try self.allocator.realloc(body, body.len + 1);
                     body[body.len - 1] = stmt;
+                } else {
+                    while (!try self.match(.RIGHT_BRACE)) {
+                        var stmt = try self.parseStatement();
+                        body = try self.allocator.realloc(body, body.len + 1);
+                        body[body.len - 1] = stmt;
+                    }
                 }
 
                 return .{
@@ -943,26 +1022,35 @@ pub const Parser = struct {
 
                 var body = try self.allocator.alloc(Statement, 0);
 
-                if (!try self.match(.LEFT_BRACE)) return error.ExpectedBrace;
-
-                while (!try self.match(.RIGHT_BRACE)) {
+                if (!try self.match(.LEFT_BRACE)) {
                     var stmt = try self.parseStatement();
                     body = try self.allocator.realloc(body, body.len + 1);
                     body[body.len - 1] = stmt;
-                }
-
-                var bodyElse: ?[]Statement = null;
-
-                if (try self.match(.ELSE)) {
-                    bodyElse = try self.allocator.alloc(Statement, 0);
-
-                    if (!try self.match(.LEFT_BRACE)) return error.ExpectedBrace;
-
+                } else {
                     while (!try self.match(.RIGHT_BRACE)) {
                         var stmt = try self.parseStatement();
-                        bodyElse = try self.allocator.realloc(bodyElse.?, bodyElse.?.len + 1);
-                        bodyElse.?[bodyElse.?.len - 1] = stmt;
+                        body = try self.allocator.realloc(body, body.len + 1);
+                        body[body.len - 1] = stmt;
                     }
+                }
+
+                var fBodyElse: ?[]Statement = null;
+
+                if (try self.match(.ELSE)) {
+                    var bodyElse = try self.allocator.alloc(Statement, 0);
+
+                    if (!try self.match(.LEFT_BRACE)) {
+                        var stmt = try self.parseStatement();
+                        bodyElse = try self.allocator.realloc(bodyElse, bodyElse.len + 1);
+                        bodyElse[bodyElse.len - 1] = stmt;
+                    } else {
+                        while (!try self.match(.RIGHT_BRACE)) {
+                            var stmt = try self.parseStatement();
+                            bodyElse = try self.allocator.realloc(bodyElse, bodyElse.len + 1);
+                            bodyElse[bodyElse.len - 1] = stmt;
+                        }
+                    }
+                    fBodyElse = bodyElse;
                 }
 
                 return .{
@@ -970,7 +1058,7 @@ pub const Parser = struct {
                         .If = .{
                             .check = check,
                             .body = body,
-                            .bodyElse = bodyElse,
+                            .bodyElse = fBodyElse,
                         },
                     },
                 };
@@ -994,7 +1082,9 @@ pub const Parser = struct {
     }
 
     pub fn parseDef(self: *Self) parserError!Definition {
-        if (!try self.match(.DEF)) return error.ExpectedDef;
+        const force = self.current.kind == .FORCE;
+
+        if (!try self.match(.DEF) and !try self.match(.FORCE)) return error.ExpectedDef;
         var name = self.current.lexeme;
         try self.advance();
 
@@ -1004,6 +1094,7 @@ pub const Parser = struct {
 
         if (self.prev.kind != .RIGHT_BRACE and !try self.match(.SEMI_COLON)) {
             std.log.info("{}", .{val});
+            std.log.info("{}", .{self.current});
 
             return error.ExpectedSemicolon;
         }
@@ -1011,6 +1102,7 @@ pub const Parser = struct {
         return .{
             .name = name,
             .value = val,
+            .force = force,
         };
     }
 

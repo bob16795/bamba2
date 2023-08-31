@@ -1,6 +1,8 @@
 //! We do this instead of @cImportfdsa because the self-hosted compiler is easier
 //! to bootstrap if it does not depend on translate-c.
 
+const std = @import("std");
+
 /// Do not compare directly to .True, use toBool() instead.
 pub const Bool = enum(c_int) {
     False,
@@ -8,7 +10,7 @@ pub const Bool = enum(c_int) {
     _,
 
     pub fn fromBool(b: bool) Bool {
-        return @intToEnum(Bool, @boolToInt(b));
+        return @as(Bool, @enumFromInt(@intFromBool(b)));
     }
 
     pub fn toBool(b: Bool) bool {
@@ -91,6 +93,17 @@ pub const Context = opaque {
 };
 
 pub const Value = opaque {
+    pub fn format(
+        self: Value,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+        _ = fmt;
+        try writer.print("{p}", .{self});
+    }
+
     pub const addAttributeAtIndex = ZigLLVMAddAttributeAtIndex;
     extern fn ZigLLVMAddAttributeAtIndex(*const Value, Idx: AttributeIndex, A: *Attribute) void;
 
