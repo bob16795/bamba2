@@ -1,0 +1,138 @@
+def std: import "std/std.bam";
+
+def Drivable: std.Types.Interface.create(${
+    ${"drive", Void},
+    ${"accident", i32},
+}, class {
+    def pos: prop i64;
+
+    def init: fn -> Self {
+        def result: new Self;
+        result.pos = i64(0.0);
+
+        return *result;
+    };
+});
+
+def printf: extfn -> Void;
+
+def Car: class {
+    def accel: prop i64; 
+    def speed: prop i64;
+
+    def drive: fn self[*Car] data[*Drivable.Data] -> Void {
+        data.pos = *data.pos + *self.speed;
+        self.speed = *self.speed + *self.accel;
+
+        printf("car drove\n", ${*self.accel});
+        printf("=====\n", ${*self.accel});
+        printf("a: %d\n", ${*self.accel});
+        printf("v: %d\n", ${*self.speed});
+        printf("x: %d\n", ${*data.pos});
+        printf("\n", ${*self.accel});
+
+        return;
+    };
+
+    def accident: fn self[*Car] data[*Drivable.Data] -> i32 {
+        self.speed = i64(0);
+
+        printf("car acccident\n", ${*self.accel});
+        printf("=========\n", ${*self.accel});
+        printf("a: %d\n", ${*self.accel});
+        printf("v: %d\n", ${*self.speed});
+        printf("x: %d\n", ${*data.pos});
+        printf("\n", ${*self.accel});
+
+        return i32(0);
+    };
+
+    def init: fn speed[i64] accel[i64] -> Car {
+        def result: new Car;
+
+        result.speed = speed;
+        result.accel = accel;
+
+        return *result;
+    };
+};
+
+def Cycle: class {
+    def speed: prop i64; 
+
+    def drive: fn self[*Cycle] data[*Drivable.Data] -> Void {
+        data.pos = *data.pos + *self.speed;
+
+        printf("cycle drove\n");
+        printf("=====\n");
+        printf("v: %d\n", ${*self.speed});
+        printf("x: %d\n", ${*data.pos});
+        printf("\n");
+
+        return;
+    };
+
+    def accident: fn self[*Cycle] data[*Drivable.Data] -> i32 {
+        self.speed = i64(0);
+
+        printf("cycle accident\n");
+        printf("=====\n");
+        printf("v: %d\n", ${*self.speed});
+        printf("x: %d\n", ${*data.pos});
+        printf("\n");
+
+        return i32(0);
+    };
+
+    def init: fn speed[i64] -> Cycle {
+        def result: new Cycle;
+
+        result.speed = speed;
+
+        return *result;
+    };
+};
+
+def DrivableList: std.Types.ArrayList(Drivable);
+def updateOrder: ${0, 1, 0, 1, 0, 1};
+
+fdef main: fn -> Void {
+    def car: new Car = Car.init(i64(10), i64(2));
+    def cycle: new Cycle = Cycle.init(i64(10));
+
+    def drivables: new DrivableList = DrivableList.init();
+
+    drivables.append(Drivable.init(Car, car));
+    drivables.append(Drivable.init(Cycle, cycle));
+
+    printf("Car Size: %d\n", Car.SIZE);
+    printf("Drivable Size: %d\n", Drivable.SIZE);
+
+    for idx in (updateOrder) {
+        drivables[usize(idx)].drive();
+    }
+
+    for idx in (updateOrder) {
+        drivables[usize(idx)].drive();
+    }
+
+    for idx in (updateOrder) {
+        drivables[usize(idx)].accident();
+    }
+    
+    for idx in (updateOrder) {
+        drivables[usize(idx)].drive();
+    }
+
+    def OptI32: comptime {
+        return std.Types.Optional(i32);
+    };
+
+    def opt: new OptI32 = OptI32.some(i32(10));
+
+    if (opt.is_some()) {
+        printf("lol\n");
+    }
+    
+    return;
+};

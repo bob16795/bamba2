@@ -1,0 +1,2 @@
+def Math: import "std/math.bam";
+def Types: import "std/types.bam";

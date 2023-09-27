@@ -1,0 +1,72 @@
+2023-09-22 14:59:34 - Neovide panicked with the message 'Focus Lost Failed: DecodeError(ReaderError(Custom { kind: UnexpectedEof, error: "EOF" }), "nvim_command")'. (File: src/bridge/ui_commands.rs; Line: 144, Column: 18)
+   0: <unknown>
+   1: <unknown>
+   2: <unknown>
+   3: <unknown>
+   4: <unknown>
+   5: <unknown>
+   6: <unknown>
+   7: <unknown>
+   8: <unknown>
+   9: <unknown>
+  10: <unknown>
+  11: <unknown>
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+
+2023-09-27 15:49:32 - Neovide panicked with the message 'Focus Lost Failed: NeovimError(Some(0), "BufWinLeave Autocommands for \"<buffer=1>\": Vim(append):Error executing lua callback: ...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:224: attempt to index a nil value\nstack traceback:\n\t...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:224: in function <...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:223>")'. (File: src/bridge/ui_commands.rs; Line: 144, Column: 18)
+   0: <unknown>
+   1: <unknown>
+   2: <unknown>
+   3: <unknown>
+   4: <unknown>
+   5: <unknown>
+   6: <unknown>
+   7: <unknown>
+   8: <unknown>
+   9: <unknown>
+  10: <unknown>
+  11: <unknown>
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+
+2023-09-27 15:49:32 - Neovide panicked with the message 'Mouse Input Failed: SendError(WriterError(Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }), "nvim_input_mouse")'. (File: src/bridge/ui_commands.rs; Line: 69, Column: 18)
+   0: <unknown>
+   1: <unknown>
+   2: <unknown>
+   3: <unknown>
+   4: <unknown>
+   5: <unknown>
+   6: <unknown>
+   7: <unknown>
+   8: <unknown>
+   9: <unknown>
+  10: <unknown>
+  11: <unknown>
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+
+2023-09-27 21:35:38 - Neovide panicked with the message 'Focus Lost Failed: NeovimError(Some(0), "BufWinLeave Autocommands for \"<buffer=1>\": Vim(append):Error executing lua callback: ...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:224: attempt to index a nil value\nstack traceback:\n\t...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:224: in function <...site/pack/packer/start/barbar.nvim/lua/barbar/events.lua:223>")'. (File: src/bridge/ui_commands.rs; Line: 144, Column: 18)
+   0: <unknown>
+   1: <unknown>
+   2: <unknown>
+   3: <unknown>
+   4: <unknown>
+   5: <unknown>
+   6: <unknown>
+   7: <unknown>
+   8: <unknown>
+   9: <unknown>
+  10: <unknown>
+  11: <unknown>
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+

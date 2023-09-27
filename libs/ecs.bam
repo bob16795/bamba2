@@ -1,0 +1,337 @@
+def std: import "std/std.bam";
+    
+def Entity: u32;
+def MAX_ENTITIES: 5000;
+
+def ComponentType: u8;
+def MAX_COMPONENTS: 32;
+
+def Signature: bool[MAX_COMPONENTS];
+
+def ComponentType: usize;
+
+def System: class {
+    def entities: prop std.Types.ArrayList(Entity);
+
+    def init: fn self[*Self] -> Void {
+        self.entities = comptime {
+            return std.Types.ArrayList(Entity);
+        }.init();
+
+        return;
+    };
+};
+def MAX_SYSTEMS: 32;
+
+def EntityManager: class {
+    def availableEntities: prop std.Types.ArrayList(Entity);
+    def signatures: prop Signature[MAX_ENTITIES];
+    def living: prop usize;
+
+    def init: fn self[*Self] -> Void {
+        self.availableEntities = comptime {
+            return std.Types.ArrayList(Entity);
+        }.init();
+
+        def entity: new Entity = Entity(0);
+
+        while (*entity < Entity(MAX_ENTITIES)) {
+            self.availableEntities.append(*entity);
+            self.signatures[*entity] = Signature(0);
+
+            entity = *entity + Entity(1);
+            def j: new usize = usize(0);
+            while (*j < usize(MAX_COMPONENTS)) {
+                self.signatures[*entity][*j] = bool(false);
+
+                j = *j + usize(1);
+            }
+        }
+
+        self.living = usize(0);
+
+        return;
+    };
+
+    def create: fn self[*Self] -> Entity {
+        def result: self.availableEntities.pop();
+
+        self.living = *self.living + usize(1);
+
+        return result;
+    };
+
+    def destroy: fn self[*Self] entity[Entity] -> Void {
+        self.signatures[entity] = u32(0);
+        self.availableEntitys.push(entity);
+
+        return;
+    };
+    
+    def setSignature: fn self[*Self] entity[Entity] signature[Signature] -> Void {
+        self.signatures[entity] = signature;
+
+        return;
+    };
+    
+    def getSignature: fn self[*Self] entity[Entity] -> Signature {
+        def result: *self.signatures[entity];
+
+        return result;
+    };
+};
+        
+        def printf: extfn -> Void;
+
+def ComponentArray: fn T -> Class {
+    return class {
+        def size: prop usize;
+        def componentArray: prop T[MAX_ENTITIES];
+        def entityToComponent: prop usize[MAX_ENTITIES];
+        def componentToEntity: prop Entity[MAX_ENTITIES];
+
+        def init: fn self[*Self] -> Void {
+            self.size = usize(0);
+
+            return;
+        };
+
+        def insertData: fn self[*Self] entity[Entity] component[T] -> Void {
+            self.entityToComponent[entity] = *self.size;
+            self.componentToEntity[*self.size] = entity;
+            self.componentArray[*self.size] = component;
+
+            self.size = *self.size + usize(1);
+
+            return;
+        };
+        
+        def removeData: fn self[*Self] entity[Entity] -> Void {
+            // Copy element at end into deleted element's place to maintain density
+            def indexOfRemovedEntity: self.entityToComponent[entity];
+            def indexOfLastElement: *self.size - usize(1);
+            self.componentArray[indexOfRemovedEntity] = self.componentArray[indexOfLastElement];
+
+            // Update map to point to moved spot
+            def entityOfLastElement: self.componentToEntity[indexOfLastElement];
+            self.entityToIndexMap[entityOfLastElement] = indexOfRemovedEntity;
+            self.indexToEntityMap[indexOfRemovedEntity] = entityOfLastElement;
+
+            self.size = *self.size - usize(1);
+
+            return;
+        };
+
+        def getData: fn self[*Self] entity[Entity] -> *T {
+            return self.componentArray[*self.entityToComponent[entity]];
+        };
+
+        def entityDestroyed: fn self[*Self] entity[Entity] -> Void {
+            removeData(self, entity);
+
+            return;
+        };
+    };
+};
+
+def calloc: extfn -> *Void;
+
+def ComponentManager: class {
+    def InternalCompArray: ComponentArray(*i32);
+    def componentArrays: prop (*InternalCompArray)[MAX_COMPONENTS];
+
+    def LAST_ARRAY: 0;
+
+    def init: fn -> Self {
+        def result: new Self;
+    
+        comptime {
+            ADD_DEF(Self, "LAST_ARRAY", 0);
+        };
+
+        return *result;
+    };
+
+    def registerComponent: fn self[*Self] T[Type] -> Void {
+        comptime {
+            ADD_DEF(T, "COMPONENT_ID", Self.LAST_ARRAY);
+            ADD_DEF(Self, "LAST_ARRAY", Self.LAST_ARRAY + 1);
+        };
+
+        def Array: comptime { return ComponentArray(*T); };
+
+        def component: (*Array)(calloc(Array.SIZE, usize(1))); // malloc
+        component.init();
+
+        self.componentArrays[usize(T.COMPONENT_ID)] = component;
+        
+        return;
+    };
+
+    def getComponentType: fn self[*Self] T[Type] -> ComponentType {
+        return ComponentType(T.COMPONENT_ID);
+    };
+
+    def addComponent: fn self[*Self] T[Type] entity[Entity] component[*Void] -> Void {
+        def Array: comptime { return ComponentArray(*T); };
+
+        Array.insertData(self.getComponentArray(T), entity, component);
+        
+        return;
+    };
+
+    def removeComponent: fn self[*Self] T[Type] entity[Entity] -> Void {
+        def Array: comptime { return ComponentArray(*T); };
+
+        Array.removeData(self.getComponentArray(T), entity);
+
+        return;
+    };
+
+    def getComponent: fn self[*Self] T[Type] entity[Entity] -> *Void {
+        def Array: comptime { return ComponentArray(*T); };
+
+        return Array.getData(self.getComponentArray(T), entity);
+    };
+
+    def entityDestroyed: fn self[*Self] entity[Entity] -> Void {
+        def i: new usize = usize(0);
+
+        while (*i < MAX_COMPONENTS) {
+            def component: self.componentArrays[*i];    
+            component.entityDestroyed(entity);
+
+            i = *i + usize(1);
+        }
+
+        return;
+    };
+
+    def getComponentArray: fn self[*Self] T[Type] -> *InternalCompArray {
+        def result: self.componentArrays[ComponentType(T.COMPONENT_ID)];
+
+        return *result;
+    };
+};
+
+
+def SystemList: std.Types.ArrayList(*System);
+def SystemManager: class {
+    def signatures: prop Signature[MAX_SYSTEMS];
+    def systems: prop SystemList;
+
+    def LAST_ARRAY: 0;
+
+    def init: fn self[*Self] -> Void {
+        self.systems = SystemList.init();
+
+        return;
+    };
+
+    def registerSystem: fn self[*Self] T[Type] -> *Void {
+        comptime {
+            ADD_DEF(T, "SYSTEM_ID", Self.LAST_ARRAY);
+            ADD_DEF(Self, "LAST_ARRAY", Self.LAST_ARRAY + 1);
+        };
+
+        def system: (*System)(calloc(T.SIZE, usize(1))); // malloc
+        system.init();
+
+        self.systems.append(system);
+        
+        return system;
+    };
+
+    def setSignature: fn self[*Self] T[Type] signature[Signature] -> Void {
+        self.signatures[usize(T.SYSTEM_ID)] = signature;
+
+        return;
+    };
+
+    def entityDestroyed: fn self[*Self] entity[Entity] -> Void {
+        // TODO
+
+        return;
+    };
+
+    def entitySignatureChanged: fn self[*Self] entity[Entity] signature[Signature] -> Void {
+        def i: new usize = usize(0);
+        def exp: new Signature = signature; 
+
+        while (*i < usize(*self.systems.items.len)) {
+            def system: *(*self.systems.items.ptr)[*i];
+            def systemSignature: self.signatures[*i];
+
+            def bad: new bool = bool(false);
+
+            def j: new usize = usize(0);
+            while (*j < usize(MAX_COMPONENTS)) {
+                if (*exp[*j] == bool(false) & *systemSignature[*j] == bool(true)) {
+                    bad = bool(true);
+                }
+
+                j = *j + usize(1);
+            }
+
+            if (~(*bad)) {
+                if (~system.entities.contains(entity)) {
+                    system.entities.append(entity);
+                }
+            }
+
+            i = *i + usize(1);
+        }
+
+        return;
+    };
+};
+
+def Coordinator: class {
+    def componentManager: prop ComponentManager;
+    def entityManager: prop EntityManager;
+    def systemManager: prop SystemManager;
+
+    def init: fn self[*Self] -> Void {
+        self.entityManager.init();
+        self.systemManager.init();
+        self.componentManager.init();
+     
+        return;
+    };
+
+    def createEntity: fn self[*Self] -> Entity {
+        return self.entityManager.create();
+    };
+
+    def registerComponent: fn self[*Self] T[Type] -> Void {
+        self.componentManager.registerComponent(T);
+
+        return;
+    };
+
+    def addComponent: fn self[*Self] T[Type] entity[Entity] component[*Void] -> Void {
+        self.componentManager.addComponent(T, entity, component);
+
+        def sig: new Signature = self.entityManager.getSignature(entity);
+        sig[usize(T.COMPONENT_ID)] = bool(true);
+        self.entityManager.setSignature(entity, *sig);
+
+        self.systemManager.entitySignatureChanged(entity, *sig);
+
+        return;
+    };
+    
+    def registerSystem: fn self[*Self] T[Type] -> *Void {
+        return self.systemManager.registerSystem(T);
+    };
+
+    def setSystemSignature: fn self[*Self] T[Type] signature[Signature] -> Void {
+        self.systemManager.setSignature(T, signature);
+
+        return;
+    };
+
+    def getComponent: fn self[*Self] T[Type] entity[Entity] -> *Void {
+        return self.componentManager.getComponent(T, entity);
+    };
+};

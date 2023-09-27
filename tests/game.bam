@@ -1,0 +1,209 @@
+def std: import "std/std.bam";
+def sdl: import "libs/sdl.bam";
+def ecs: import "libs/ecs.bam";
+
+def WINDOW_NAME: "GAME";
+
+def Vec2: class {
+    def x: prop f64;
+    def y: prop f64;
+};
+
+def Gravity: class {
+    def force: prop Vec2;
+};
+
+def RigidBody: class {
+    def vel: prop Vec2;
+    def acc: prop Vec2;
+};
+
+def Transform: class {
+    def pos: prop Vec2;
+    def rot: prop f64;
+    def scale: prop Vec2;
+};
+
+def Sprite: class {
+    def tex: prop *sdl.Texture;
+};
+
+def PhysicsSystem: class {
+    def base: prop ecs.System;
+
+    def init: fn self[*Self] -> Void {
+        def i: new usize = usize(0);        
+            
+        printf("init %d\n", *self.base.entities.items.len);
+
+        while (*i < *self.base.entities.items.len) {
+            def entity: self.base.entities[*i];
+
+            def rigidbody: (*RigidBody)(coordinator.getComponent(RigidBody, *entity));
+            def gravity: (*Gravity)(coordinator.getComponent(Gravity, *entity));
+            def transform: (*Transform)(coordinator.getComponent(Transform, *entity));
+
+            rigidbody.vel.x = f64(0.0);
+            rigidbody.vel.y = f64(0.0);
+            
+            transform.pos.x = f64(100.0) * f64(*i);
+            transform.pos.y = f64(100.0) * f64(*i);
+            
+            transform.scale.x = f64(100.0);
+            transform.scale.y = f64(100.0);
+            
+            gravity.force.x = f64(0.0);
+            gravity.force.y = f64(0.0);
+
+            i = *i + usize(1);
+        }
+
+        return;
+    };
+
+    def update: fn self[*Self] dt[f64] -> Void {
+        def i: new usize = usize(0);        
+
+        while (*i < *self.base.entities.items.len) {
+            def entity: self.base.entities[*i];
+
+            def rigidbody: (*RigidBody)(coordinator.getComponent(RigidBody, *entity));
+            def gravity: (*Gravity)(coordinator.getComponent(Gravity, *entity));
+            def transform: (*Transform)(coordinator.getComponent(Transform, *entity));
+
+            i = *i + usize(1);
+        }
+
+        return;
+    };
+};
+
+def DrawSystem: class {
+    def base: prop ecs.System;
+
+    def draw: fn self[*Self] renderer[sdl.Renderer] -> Void {
+        def i: new usize = usize(0);        
+            
+        while (*i < *self.base.entities.items.len) {
+            def entity: self.base.entities[*i];
+
+            def transform: (*Transform)(coordinator.getComponent(Transform, *entity));
+            def sprite: (*Sprite)(coordinator.getComponent(Sprite, *entity));
+    
+            def rect: new sdl.Rect;
+            rect.x = i32(*transform.pos.x);
+            rect.y = i32(*transform.pos.y);
+            rect.w = i32(*transform.scale.x);
+            rect.h = i32(*transform.scale.y);
+
+            renderer.copy(*(*sprite).tex, rect);
+
+            i = *i + usize(1);
+        }
+
+        return;
+    };
+};
+
+def EntityList: std.Types.ArrayList(ecs.Entity);
+
+// externs
+def printf: extfn -> Void;
+def malloc: extfn -> *Void;
+
+// globals
+def coordinator: new ecs.Coordinator;
+
+def setupSigs: fn -> Void {
+    def sig: new ecs.Signature;
+    def j: new usize = usize(0);
+    while (*j < usize(ecs.MAX_COMPONENTS)) {
+        sig[*j] = bool(false);
+
+        j = *j + usize(1);
+    }
+
+    sig[usize(Transform.COMPONENT_ID)] = bool(true);
+    sig[usize(RigidBody.COMPONENT_ID)] = bool(true);
+    sig[usize(Gravity.COMPONENT_ID)] = bool(true);
+    sig[usize(Sprite.COMPONENT_ID)] = bool(false);
+    
+    coordinator.setSystemSignature(PhysicsSystem, *sig);
+    
+    sig[usize(Transform.COMPONENT_ID)] = bool(true);
+    sig[usize(RigidBody.COMPONENT_ID)] = bool(false);
+    sig[usize(Gravity.COMPONENT_ID)] = bool(false);
+    sig[usize(Sprite.COMPONENT_ID)] = bool(true);
+
+    coordinator.setSystemSignature(DrawSystem, *sig);
+
+    return;
+};
+
+// main fn
+fdef main: fn -> i32 {
+    if (sdl.init(u32(sdl.InitFlags.EVERYTHING)) != u32(0)) {
+        printf("FAILED\n");
+
+        return i32(0);
+    }
+    
+    def window: sdl.Window.create(WINDOW_NAME, i32(250), i32(250), u32(0));
+    def renderer: sdl.Renderer.create(window, i32(0) - i32(1), i32(2));
+
+    def surface: sdl.Surface.create("lol.png");
+
+    coordinator.init();
+    coordinator.registerComponent(Sprite);
+    coordinator.registerComponent(Gravity);
+    coordinator.registerComponent(RigidBody);
+    coordinator.registerComponent(Transform);
+
+    def drawSystem: new *DrawSystem = coordinator.registerSystem(DrawSystem);
+    def physicsSystem: new *PhysicsSystem = coordinator.registerSystem(PhysicsSystem);
+
+    setupSigs();
+
+    def entities: new EntityList = EntityList.init();
+
+    def sprite: new Sprite;
+    sprite.tex = sdl.Texture.create(renderer, surface);
+
+    entities.append(coordinator.createEntity());
+    coordinator.addComponent(Transform, *entities[usize(0)], new Transform);
+    coordinator.addComponent(Gravity, *entities[usize(0)], new Gravity);
+    coordinator.addComponent(RigidBody, *entities[usize(0)], new RigidBody);
+    coordinator.addComponent(Sprite, *entities[usize(0)], sprite);
+
+    entities.append(coordinator.createEntity());
+    coordinator.addComponent(Transform, *entities[usize(1)], new Transform);
+    coordinator.addComponent(Sprite, *entities[usize(1)], sprite);
+    
+    def close: new bool = bool(false);
+    def event: new sdl.Event;
+
+    // main loop
+    (*physicsSystem).init();
+        
+    while (*close == bool(false)) {
+        while (sdl.Event.poll(event)) {
+            if (*event.type == u32(256)) {
+                close = bool(true);
+            } else if (*event.type == u32(768)) {
+                def keycode: *(*sdl.Event.KeyEvent)(event).keysym.keycode;
+
+                if (keycode == i32('f')) {
+                    printf("RIP\n");
+                }
+            }
+        }
+
+        (*physicsSystem).update(f64(0.1));
+
+        renderer.clear();
+        (*drawSystem).draw(renderer);
+        renderer.present();
+    }
+
+    return i32(0);
+};

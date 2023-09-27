@@ -1,0 +1,134 @@
+def Str: u8[];
+
+def InitFlags: class {
+    def TIMER: 1;
+    def AUDIO: 16;
+    def VIDEO: 32;
+    def JOYSTICK: 512;
+    def EVENTS: 16384;
+
+    def EVERYTHING: TIMER | AUDIO | VIDEO | JOYSTICK | EVENTS;
+
+    // SDL_INIT_HAPTIC       = 0x00001000,
+    // SDL_INIT_GAMEPAD      = 0x00002000,  /**< `SDL_INIT_GAMEPAD` implies `SDL_INIT_JOYSTICK` */
+    // SDL_INIT_EVENTS       = 0x00004000,
+    // SDL_INIT_SENSOR       = 0x00008000
+};
+
+def init: fn flags[u32] -> u32 {
+    def SDL_Init: extfn -> u32;
+
+    return SDL_Init(flags);
+};
+
+def WindowId: u32;
+def Window: class {
+    def Pos: class {
+        def CENTERED_MASK: 805240832;
+
+        def CENTERED: CENTERED_MASK | 0;
+    };
+
+    def self: prop *Void;
+
+    def create: fn name[*Str] w[i32] h[i32] flags[u32] -> *Self {
+        def SDL_CreateWindow: extfn -> *Self;
+
+        return SDL_CreateWindow(name, i32(Pos.CENTERED), i32(Pos.CENTERED), w, h, flags);
+    };
+};
+
+def Renderer: class {
+    def self: prop *Void;
+
+    def create: fn win[*Window] flags[i32] tmp[i32] -> *Self {
+        def SDL_CreateRenderer: extfn -> *Self;
+
+        return SDL_CreateRenderer(win, flags, tmp);
+    };
+
+    def clear: fn self[*Self] -> Void {
+        def SDL_RenderClear: extfn -> Void;
+
+        return SDL_RenderClear(self.self);
+    };
+
+    def copy: fn self[*Self] texture[Texture] bnds[*Rect] -> Void {
+        def SDL_RenderCopy: extfn -> Void;
+
+        return SDL_RenderCopy(self.self, texture, null, bnds);
+    };
+
+    def present: fn self[*Self] -> Void {
+        def SDL_RenderPresent: extfn -> Void;
+
+        return SDL_RenderPresent(self.self);
+    };
+};
+
+def KeySym: class {
+    def scancode: prop i32;
+    def keycode: prop i32;
+    def mod: prop u16;
+    def unused: prop u32;
+
+    def SCANCODE_MASK: 1073741824; // 1 << 30
+
+    def KeyCodes: class {
+        def UP: fromScanCode(i32(82));
+    
+        def fromScanCode: fn x[i32] -> i32 {
+            return x | i32(SCANCODE_MASK);
+        };
+    };
+};
+
+def Surface: class {
+    def data: *Void;
+
+    def create: fn path[*Str] -> *Self {
+        def IMG_Load: extfn -> *Self;
+
+        return IMG_Load(path);
+    };
+};
+
+def Texture: class {
+    def data: prop *Void;
+
+    def create: fn renderer[*Renderer] surf[*Surface] -> Self {
+        def SDL_CreateTextureFromSurface: extfn -> Self;
+
+        return SDL_CreateTextureFromSurface(renderer, surf);
+    };
+};
+
+def Event: class {
+    def type: prop u32;
+    def padding: prop u8[54];
+
+    def poll: fn ev[*Self] -> bool {
+        def SDL_PollEvent: extfn -> i32;
+
+        return SDL_PollEvent(ev) != i32(0);
+    };
+
+    def KeyEvent: class {
+        def base: Event;
+        
+        def timestamp: prop u64;
+        def window_id: prop WindowId;
+        def state: prop u8;
+        def repeat: prop u8;
+        def padding2: prop u8;
+        def padding3: prop u8;
+        def keysym: prop KeySym;
+    };
+};
+
+def Rect: class {
+    def x: prop i32;
+    def y: prop i32;
+    def w: prop i32;
+    def h: prop i32;
+};

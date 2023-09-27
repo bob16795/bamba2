@@ -1,0 +1,17 @@
+def mainBuilderBuilder: class {
+    def buildMainBuilder: fn T -> Class {
+        return class {
+            def printf: extfn -> Void;
+    
+            def buildMain: fn value[T] -> (fn -> T) {
+                return fn -> i32 {
+                    printf("%s\n", (T)(value));
+    
+                    return i32(0);
+                };
+            };
+        };
+    };
+};
+
+fdef main: mainBuilderBuilder.buildMainBuilder(u8[]).buildMain("Hello World!");

@@ -1,0 +1,9 @@
+fdef main: fn -> i32 {
+    def printf: extfn -> void;
+
+    printf("Hello %s\n", (fn -> *i8[] {
+        return "World!";
+    })());
+
+    return i32(0);
+};

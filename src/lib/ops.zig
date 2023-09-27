@@ -38,6 +38,17 @@ pub fn operationAddRT(int: *interpreter.Interpreter, a: Value, b: Value) Operati
                 else => return error.InvalidParams,
             }
         },
+        .RealType => {
+            switch (b.Value.kind.*) {
+                .RealType => return .{
+                    .Value = .{
+                        .val = int.builder.buildFAdd(a.Value.val, b.Value.val, defaultPrefix ++ "Add"),
+                        .kind = a.Value.kind,
+                    },
+                },
+                else => return error.InvalidParams,
+            }
+        },
         else => return error.InvalidParams,
     }
 }
@@ -66,27 +77,10 @@ pub fn operationAdd(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationAddRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationAddRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationAddRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationAddRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -102,6 +96,17 @@ pub fn operationMulRT(int: *interpreter.Interpreter, a: Value, b: Value) Operati
                 .IntType => return .{
                     .Value = .{
                         .val = int.builder.buildMul(a.Value.val, b.Value.val, defaultPrefix ++ "Mul"),
+                        .kind = a.Value.kind,
+                    },
+                },
+                else => return error.InvalidParams,
+            }
+        },
+        .RealType => {
+            switch (b.Value.kind.*) {
+                .RealType => return .{
+                    .Value = .{
+                        .val = int.builder.buildFMul(a.Value.val, b.Value.val, defaultPrefix ++ "Add"),
                         .kind = a.Value.kind,
                     },
                 },
@@ -136,27 +141,10 @@ pub fn operationMul(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationMulRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationMulRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationMulRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationMulRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -224,27 +212,10 @@ pub fn operationEql(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationEqlRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationEqlRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationEqlRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationEqlRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -309,27 +280,10 @@ pub fn operationLess(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationLessRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationLessRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationLessRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationLessRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -368,27 +322,10 @@ pub fn operationAnd(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationAndRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationAndRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationAndRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationAndRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -427,27 +364,10 @@ pub fn operationOr(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationOrRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationOrRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationOrRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationOrRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -497,27 +417,10 @@ pub fn operationDiv(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationDivRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationDivRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationDivRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationDivRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -592,27 +495,10 @@ pub fn operationSub(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationSubRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationSubRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationSubRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationSubRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }
@@ -673,27 +559,10 @@ pub fn operationNotEql(
                 else => return error.InvalidParams,
             }
         },
-        .Ptr => {
-            var a = vals[0].toValue(int) orelse unreachable;
-            switch (vals[1]) {
-                .Value => {
-                    return operationNotEqlRT(int, a, vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationNotEqlRT(int, a, b);
-                },
-                else => return error.InvalidParams,
-            }
-        },
         .Value => {
             switch (vals[1]) {
                 .Value => {
                     return operationNotEqlRT(int, vals[0], vals[1]);
-                },
-                .Ptr => {
-                    var b = vals[1].toValue(int) orelse unreachable;
-                    return operationNotEqlRT(int, vals[0], b);
                 },
                 else => return error.InvalidParams,
             }

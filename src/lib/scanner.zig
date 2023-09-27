@@ -32,6 +32,7 @@ pub const Scanner = struct {
         const c = self.advance();
         if (std.ascii.isAlphabetic(c)) return self.identifier();
         if (c == '"') return self.string();
+        if (c == '`') return self.identifierString();
         if (c == '\'') return self.char();
 
         return switch (c) {
@@ -134,6 +135,15 @@ pub const Scanner = struct {
         return self.makeToken(self.identifierType());
     }
 
+    fn identifierString(self: *Self) Token {
+        while (self.peek() != '`') _ = self.advance();
+        self.start += 1;
+        const result = self.makeToken(.IDENTIFIER);
+        _ = self.advance();
+
+        return result;
+    }
+
     fn char(self: *Self) Token {
         while (self.peek() != '\'') _ = self.advance();
         self.start += 1;
@@ -153,7 +163,9 @@ pub const Scanner = struct {
     fn identifierType(self: *Self) TokenType {
         const eql = std.mem.eql;
         const lexeme = self.currentLexeme();
-        if (eql(u8, lexeme, "interface")) return .INTERFACE;
+        if (eql(u8, lexeme, "comptime")) return .COMPTIME;
+        if (eql(u8, lexeme, "for")) return .FOR;
+        if (eql(u8, lexeme, "in")) return .IN;
         if (eql(u8, lexeme, "return")) return .RET;
         if (eql(u8, lexeme, "extfn")) return .EXTERN;
         if (eql(u8, lexeme, "class")) return .STRUCT;
@@ -249,7 +261,7 @@ pub const Scanner = struct {
         ARROW,
 
         // keywords
-        INTERFACE,
+        COMPTIME,
         EXTERN,
         INLINE,
         STRUCT,
@@ -263,8 +275,10 @@ pub const Scanner = struct {
         ELSE,
         DEF,
         VAR,
+        FOR,
         RET,
         IF,
+        IN,
 
         // multi char
         IDENTIFIER,

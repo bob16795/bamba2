@@ -32,12 +32,14 @@ pub fn main() !void {
     var psr = parser.Parser.init(scn, allocator);
     var root = try psr.parse();
 
-    for (root) |node|
-        std.debug.print("{}\n", .{node});
+    //for (root) |node|
+    //    std.debug.print("{}\n", .{node});
 
     var int = try interpreter.Interpreter.init(root, allocator);
 
     var tmp = [_]u8{0} ** 1000;
+
+    int.module.setTarget("x86_64");
 
     _ = int.module.printModuleToFile("ir", @ptrCast(@alignCast(&tmp)));
 
@@ -54,7 +56,7 @@ pub fn main() !void {
         std.log.info("{s}", .{err});
     }
 
-    var targetMachine = llvm.TargetMachine.create(t, thriple, CPU, features, opt, .None);
+    var targetMachine = llvm.TargetMachine.create(t, thriple, CPU, features, opt, .Aggressive);
 
     targetMachine.emitToFile(int.module, out, .ObjectFile);
 
@@ -62,7 +64,7 @@ pub fn main() !void {
 
     var output = try std.ChildProcess.exec(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "clang", "lol.o", "-lm", "-lc", "-L.", "-lraylib" },
+        .argv = &[_][]const u8{ "gcc", "lol.o", "-L/usr/lib", "-lSDL2", "-I/usr/include/SDL2", "-D_REENTRANT", "-lSDL2_image" },
     });
 
     if (output.stdout.len != 0)

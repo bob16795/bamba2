@@ -1,0 +1,217 @@
+def Range: class {
+    def start: prop usize;
+    def end: prop usize;
+
+    def init: fn start[usize] end[usize] -> Self {
+        def result: new Self;
+
+        result.start = start;
+        result.end = end;
+
+        return *result;
+    };
+};
+
+def Slice: fn T -> Class {
+    return class {
+        def itemSize: T.SIZE;
+
+        def ptr: prop *(T[]);
+        def len: prop usize;
+
+        def empty: fn -> Self {
+            def result: new Self;
+            result.ptr = null;
+            result.len = usize(0);
+
+            return *result;
+        };
+
+        def initFrom: fn ptr[*T] len[usize] -> Self {
+            def result: new Self;
+            result.ptr = ptr;
+            result.len = len;
+
+            return *result;
+        };
+
+        def cut: fn self[*Self] range[*Range] -> Self {
+            def result: new Self;
+
+            result.ptr = usize(*self.ptr) + (usize)(*range.start * itemSize);
+            result.len = *range.end - *range.start;
+
+            return *result;
+        };
+
+        def `[]`: fn self[*Self] idx[usize] -> *T {
+            return (*self.ptr)[idx];
+        };
+    };
+};
+
+def ArrayList: fn T -> Class {
+    return class {
+        def SliceT: Slice(T);
+        def itemSize: T.SIZE;
+
+        def items: prop SliceT;
+        def capacity: prop usize;
+
+        def calloc: extfn -> *(T[]);
+        def realloc: extfn -> *(T[]);
+    
+        def init: fn -> Self {
+            def result: new Self;
+
+            result.capacity = usize(0);
+            result.items = SliceT.empty();
+
+            return *result;
+        };
+
+        def extend: fn self[*Self] -> Void {
+            self.capacity = *self.capacity * usize(2);
+            if (*self.capacity == usize(0)) 
+                self.capacity = usize(1);
+
+            self.items.ptr = Self.realloc(*self.items.ptr, Self.itemSize * *self.capacity);
+
+            return;
+        };
+
+        def append: fn self[*Self] adds[T] -> Void {
+            def oldSize: *self.items.len;
+
+            self.items.len = *self.items.len + usize(1);
+
+            if (*self.capacity < *self.items.len) {
+                extend(self);
+            }
+
+            (*self.items.ptr)[oldSize] = adds;
+
+            return;
+        };        
+
+        def pop: fn self[*Self] idx[u64] -> T {
+            self.items.len = *self.items.len - usize(1);
+
+            return *(self.items[*self.items.len]);
+        };
+
+        def contains: fn self[*Self] val[T] -> bool {
+            def i: new usize = usize(0);
+            def result: new bool = bool(false);
+
+            while (*i < *self.items.len) {
+                if (*self[*i] == val)
+                    result = bool(true);
+
+                i = *i + usize(1);
+            }
+
+            return *result;
+        };
+        
+        def `[]`: fn self[*Self] idx[usize] -> *T {
+            return self.items[idx];
+        };
+    };
+};
+
+def Closure: fn I P O Func -> Class {
+    return class {
+        def data: prop I;
+
+        def I: I;
+        def P: P;
+        def O: O;
+        
+        def init: fn inside[I] -> Self {
+            def result: new Self;
+
+            result.data = inside;
+
+            return result;
+        };
+
+        def run: fn self[*Self] params[Self.P] -> Self.O {
+            return Func(*self.data, params);
+        };
+    };
+};
+
+def Interface: class {
+    def create: fn V D -> Class {
+        def Result: class {
+            def Data: D;
+
+            def data: prop Data;
+            def self: prop *Void;
+
+            def VTable: class {
+                def LIST: V;
+            };
+        };
+
+        for FnEntry in (V) {
+            ADD_DEF(Result.VTable, FnEntry[0], prop fn func[*Void] data[*Result.Data] -> FnEntry[1]);
+            def funcImpl: fn self[*Result] -> FnEntry[1] {
+                return GET_PROP(self.vtable, FnEntry[0])(*self.self, self.data);
+            };
+
+            ADD_DEF(Result, FnEntry[0], funcImpl);
+        }
+
+        ADD_DEF(Result, "vtable", prop Result.VTable);
+        
+        def initImpl: fn T[Type] instance[*Void] -> Result {
+            def result: new Result;
+            
+            result.self = instance;
+            result.data = Result.Data.init();
+
+            for FnEntry in (Result.VTable.LIST) {
+                GET_PROP(result.vtable, FnEntry[0]) = GET_PROP(T, FnEntry[0]);
+            }
+
+            return *result;
+        };
+
+        ADD_DEF(Result, "init", initImpl);
+
+        return Result;
+    };
+};
+
+def Optional: fn T -> Class {
+    return class {
+        def BASE_TYPE: T;
+        def val: prop BASE_TYPE;
+        def has: prop bool;
+
+        def none: fn -> Self {
+            def result: new Self;
+            result.has = bool(false);
+
+            return *result;
+        };
+
+        def some: fn base[*BASE_TYPE] -> Self {
+            def result: new Self;
+            result.val = base;
+            result.has = bool(true);
+
+            return *result;
+        };
+    
+        def is_none: fn self[*Self] -> bool {
+            return *self.has == bool(false);
+        };
+        
+        def is_some: fn self[*Self] -> bool {
+            return *self.has == bool(true);
+        };
+    };
+};

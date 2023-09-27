@@ -15,6 +15,7 @@ const InterpreterError = ops.OperationError || parser.parserError || error{
     FailedImport,
     NotFound,
     NoReturn,
+    BadString,
     BadCast,
     BadNode,
     DoubleVisit,
@@ -40,7 +41,8 @@ pub const Interpreter = struct {
         FunctionType,
         FunctionData,
         Value,
-        Ptr,
+        ValueMethod,
+
         Prop,
         Struct,
         Builtin,
@@ -57,6 +59,8 @@ pub const Interpreter = struct {
         TypeType,
 
         ErrorFn,
+        AddDefFn,
+        GetPropFn,
     };
 
     pub const FunctionDataType = struct {
@@ -65,15 +69,23 @@ pub const Interpreter = struct {
             in: []parser.Expression.FunctionInput,
             out: *Value,
         },
-        impl: ?*const llvm.Value,
+        impls: std.StringHashMap(*const llvm.Value),
         implkind: ?*const llvm.Type,
         context: InterpreterContext,
-        conts: ?[]const parser.Statement,
+        conts: ?*const parser.Statement,
         callKind: enum {
             Std,
             Ext,
             Ptr,
         },
+    };
+
+    pub const StructDataType = struct {
+        name: []const u8 = defaultPrefix,
+        kind: *const llvm.Type,
+        values: std.StringHashMap(InterpreterNode),
+        context: InterpreterContext,
+        parent: ?*InterpreterNode,
     };
 
     pub const Value = union(NodeValue) {
@@ -82,17 +94,11 @@ pub const Interpreter = struct {
         ConstString: []const u8,
         ConstArray: []Value,
 
-        Include: struct {
-            name: []const u8,
+        IntType: struct {
+            signed: bool,
+            size: u32,
         },
-        Value: struct {
-            val: *const llvm.Value,
-            kind: *const Value,
-        },
-        Ptr: struct {
-            val: *const llvm.Value,
-            kind: *const Value,
-        },
+        RealType: u34,
         PtrType: struct {
             child: *const Value,
         },
@@ -100,11 +106,9 @@ pub const Interpreter = struct {
             child: *const Value,
             size: ?usize,
         },
-        IntType: struct {
-            signed: bool,
-            size: u32,
+        Include: struct {
+            name: []const u8,
         },
-        RealType: u34,
         FunctionType: struct {
             fnkind: *const llvm.Type,
             kind: *const llvm.Type,
@@ -112,17 +116,20 @@ pub const Interpreter = struct {
             out: *Value,
         },
         FunctionData: *FunctionDataType,
-        Struct: struct {
-            name: []const u8 = defaultPrefix,
-            kind: *const llvm.Type,
-            values: std.StringHashMap(InterpreterNode),
-            context: InterpreterContext,
-            parent: ?*InterpreterNode,
+        Value: struct {
+            val: *const llvm.Value,
+            kind: *const Value,
+        },
+        ValueMethod: struct {
+            val: *const llvm.Value,
+            kind: *const Value,
+            func: *FunctionDataType,
         },
         Prop: struct {
-            idx: usize,
+            idx: ?usize,
             kind: *Value,
         },
+        Struct: *StructDataType,
         Builtin: Builtin,
 
         pub fn isTrue(self: *const Value) ?bool {
@@ -138,12 +145,25 @@ pub const Interpreter = struct {
             }
         }
 
+        pub fn getName(self: *Value) ?[]const u8 {
+            return switch (self.*) {
+                .FunctionData => self.FunctionData.name,
+                .Struct => self.Struct.name,
+                .Value => |*val| blk: {
+                    const name = val.val.getValueName();
+                    const len = std.mem.len(name);
+
+                    break :blk name[0..len];
+                },
+                else => null,
+            };
+        }
+
         pub fn setName(self: *Value, name: []const u8) !void {
             switch (self.*) {
                 .FunctionData => self.FunctionData.name = name,
                 .Struct => self.Struct.name = name,
                 .Value => |*val| val.val.setValueName2(@ptrCast(name), @intCast(name.len)),
-                .Ptr => |*val| val.val.setValueName2(@ptrCast(name), @intCast(name.len)),
                 else => {},
             }
             return;
@@ -151,18 +171,14 @@ pub const Interpreter = struct {
 
         pub fn setTo(self: *Value, parent: *Interpreter, value: *Value) !Value {
             switch (self.*) {
-                .Ptr => |val| {
-                    var assign = value.getValue(parent) orelse return error.InvalidAssign;
-
-                    // TODO: check type
-                    _ = parent.builder.buildStore(assign, val.val);
-
-                    return self.*;
-                },
                 .Value => |val| {
                     switch (val.kind.*) {
                         .PtrType => {
-                            var assign = value.getValue(parent) orelse return error.InvalidAssign;
+                            var assign = value.getValue(parent) orelse {
+                                std.log.info("{}", .{self});
+                                std.log.info("{}", .{value});
+                                return error.InvalidAssign;
+                            };
 
                             // TODO: check type
                             _ = parent.builder.buildStore(assign, val.val);
@@ -171,6 +187,19 @@ pub const Interpreter = struct {
                         },
                         else => {
                             std.log.info("{s}", .{@tagName(val.kind.*)});
+                            return error.InvalidAssign;
+                        },
+                    }
+                },
+                .ConstInt => |*c| {
+                    switch (value.*) {
+                        .ConstInt => |val| {
+                            c.* = val;
+
+                            return self.*;
+                        },
+                        else => {
+                            std.log.info("{s}", .{@tagName(value.*)});
                             return error.InvalidAssign;
                         },
                     }
@@ -203,69 +232,6 @@ pub const Interpreter = struct {
                         },
                     }
                 },
-                .Ptr => |v| {
-                    return .{
-                        .Value = .{
-                            .val = parent.builder.buildLoad(v.kind.getType(parent) orelse return null, v.val, defaultPrefix ++ "Load"),
-                            .kind = v.kind,
-                        },
-                    };
-                },
-                else => return null,
-            }
-        }
-
-        pub fn getPtr(self: *Value, parent: *Interpreter) ?*const llvm.Value {
-            switch (self.*) {
-                .Value => |v| {
-                    return v.val;
-                },
-                .Ptr => |v| {
-                    return v.val;
-                },
-                .Builtin => |v| {
-                    return switch (v) {
-                        .NullValue => parent.context.pointerType(0).constNull(),
-                        else => null,
-                    };
-                },
-                .FunctionData => |_| {
-                    return parent.implFunc(self, null) catch null;
-                },
-                .ConstString => |s| {
-                    if (parent.strings.getPtr(s)) |res| return res.Ptr.val;
-
-                    var tmpStr = parent.allocator.dupe(u8, s) catch return null;
-                    defer parent.allocator.free(tmpStr);
-
-                    var finalStr = tmpStr;
-                    finalStr.len = 0;
-                    var idx: usize = 0;
-
-                    while (idx < s.len) {
-                        finalStr.len += 1;
-                        finalStr[finalStr.len - 1] = s[idx];
-                        if (s[idx] == '\\') {
-                            idx += 1;
-                            switch (s[idx]) {
-                                'n' => finalStr[finalStr.len - 1] = '\n',
-                                'b' => finalStr[finalStr.len - 1] = 8,
-                                'r' => finalStr[finalStr.len - 1] = '\r',
-                                't' => finalStr[finalStr.len - 1] = '\t',
-                                else => finalStr[finalStr.len - 1] = s[idx],
-                            }
-                        }
-                        idx += 1;
-                    }
-
-                    var str = parent.context.constString(finalStr.ptr, @as(c_uint, @intCast(finalStr.len)), .False);
-                    var adds = parent.module.addGlobal(str.typeOf(), defaultPrefix ++ "string");
-                    adds.setInitializer(str);
-
-                    parent.strings.put(s, .{ .Ptr = .{ .val = adds, .kind = &.{ .Builtin = .StringType } } }) catch unreachable;
-
-                    return adds;
-                },
                 else => return null,
             }
         }
@@ -274,9 +240,6 @@ pub const Interpreter = struct {
             switch (self.*) {
                 .Value => |v| {
                     return v.val;
-                },
-                .Ptr => |v| {
-                    return parent.builder.buildLoad(v.kind.getType(parent) orelse unreachable, v.val, defaultPrefix ++ "Load");
                 },
                 .Builtin => |v| {
                     return switch (v) {
@@ -297,10 +260,13 @@ pub const Interpreter = struct {
                     );
                 },
                 .FunctionData => |_| {
-                    return parent.implFunc(self, null) catch null;
+                    return parent.implFunc(self, null, false) catch |err| {
+                        std.log.info("{!}", .{err});
+                        return null;
+                    };
                 },
                 .ConstString => |s| {
-                    if (parent.strings.getPtr(s)) |res| return res.Ptr.val;
+                    if (parent.strings.getPtr(s)) |res| return res.Value.val;
 
                     var tmpStr = parent.allocator.dupe(u8, s) catch return null;
                     defer parent.allocator.free(tmpStr);
@@ -329,7 +295,7 @@ pub const Interpreter = struct {
                     var adds = parent.module.addGlobal(str.typeOf(), defaultPrefix ++ "string");
                     adds.setInitializer(str);
 
-                    parent.strings.put(s, .{ .Ptr = .{ .val = adds, .kind = &.{ .Builtin = .StringType } } }) catch unreachable;
+                    parent.strings.put(s, .{ .Value = .{ .val = adds, .kind = &.{ .Builtin = .StringType } } }) catch unreachable;
 
                     return adds;
                 },
@@ -353,7 +319,7 @@ pub const Interpreter = struct {
                 .Builtin => |b| {
                     switch (b) {
                         .VoidType => return parent.context.voidType(),
-                        .TypeType => return parent.context.intType(0),
+                        .TypeType => return parent.context.intType(1),
                         else => return null,
                     }
                 },
@@ -398,10 +364,10 @@ pub const Interpreter = struct {
                             try writer.print(", ", .{});
                         try writer.print("{?}", .{sub.kind});
                     }
-                    try writer.print("], {})", .{v.kind.out});
+                    try writer.print("], {?s})", .{v.kind.out.getName()});
                 },
                 .Value => |v| try writer.print("Value({})", .{v.kind}),
-                .Ptr => |v| try writer.print("Ptr({})", .{v.kind}),
+                .ValueMethod => |v| try writer.print("ValueMethod({}, {})", .{ v.kind, v.func }),
 
                 .IntType => |v| try writer.print("TInt({})", .{v}),
                 .RealType => |v| try writer.print("TReal({})", .{v}),
@@ -417,7 +383,7 @@ pub const Interpreter = struct {
                     try writer.print("], {})", .{v.out});
                 },
 
-                .Prop => |v| try writer.print("Prop({}, {})", .{ v.idx, v.kind }),
+                .Prop => |v| try writer.print("Prop({?}, {})", .{ v.idx, v.kind }),
                 .Include => |v| try writer.print("Incl({s})", .{v.name}),
                 .Struct => |v| {
                     try writer.print("Struct({s}, ", .{v.name});
@@ -520,22 +486,25 @@ pub const Interpreter = struct {
         var mod = llvm.Module.createWithName("Context", ctx);
         var builder = ctx.createBuilder();
 
-        var root = try allocator.create(InterpreterNode);
+        const root = try allocator.create(InterpreterNode);
+        const structData = try allocator.create(StructDataType);
+        structData.* = .{
+            .values = std.StringHashMap(InterpreterNode).init(allocator),
+            .context = InterpreterContext{
+                .locals = std.StringHashMap(Value).init(allocator),
+                .current = root,
+                .root = root,
+            },
+            .parent = null,
+            .kind = ctx.voidType(),
+        };
+
         root.* = InterpreterNode{
             .Visited = .{
                 .name = "AnonRoot",
                 .parent = null,
                 .value = .{
-                    .Struct = .{
-                        .values = std.StringHashMap(InterpreterNode).init(allocator),
-                        .context = InterpreterContext{
-                            .locals = std.StringHashMap(Value).init(allocator),
-                            .current = root,
-                            .root = root,
-                        },
-                        .parent = null,
-                        .kind = ctx.voidType(),
-                    },
+                    .Struct = structData,
                 },
             },
         };
@@ -566,19 +535,168 @@ pub const Interpreter = struct {
         for (nodes) |*pnode| {
             if (!pnode.force) continue;
 
-            std.log.info("{s}", .{pnode.name});
-
             const vnode = (try int.visitNode(try int.getNode(int.root, pnode.name), &root.Visited.value));
-            try root.Visited.value.Struct.values.put(pnode.name, vnode.*);
-
-            _ = int.implNode(vnode, null) catch |err| {
+            _ = int.implFunc(&vnode.Visited.value, null, true) catch |err| {
                 _ = int.module.printModuleToFile("ir", @ptrCast(@alignCast(&tmp)));
 
                 return err;
             };
+
+            try root.Visited.value.Struct.values.put(pnode.name, vnode.*);
         }
 
         return int;
+    }
+
+    pub fn getProp(self: *Self, root: *Value, child: []const u8) !Value {
+        if (std.mem.eql(u8, child, "SIZE")) {
+            var sizeType = try self.allocator.create(Value);
+            sizeType.* = .{
+                .IntType = .{
+                    .size = 64,
+                    .signed = false,
+                },
+            };
+
+            const gep = self.builder.buildStructGEP(
+                (root.getType(self) orelse return error.InvalidValue).arrayType(0),
+                self.context.pointerType(0).constNull(),
+                @intCast(1),
+                defaultPrefix ++ "SizePtr",
+            );
+
+            return .{
+                .Value = .{
+                    .val = self.builder.buildPtrToInt(
+                        gep,
+                        self.context.intType(64),
+                        defaultPrefix ++ "Size",
+                    ),
+                    .kind = sizeType,
+                },
+            };
+        }
+        switch (root.*) {
+            .FunctionData => |fnc| {
+                if (std.mem.eql(u8, child, "TYPE")) {
+                    return .{
+                        .FunctionType = .{
+                            .in = fnc.kind.in,
+                            .out = fnc.kind.out,
+                            .kind = undefined,
+                            .fnkind = undefined,
+                        },
+                    };
+                }
+                return error.NotFound;
+            },
+            .Struct => |str| {
+                _ = str;
+                return (try self.visitNode(root.Struct.values.getPtr(child) orelse {
+                    std.log.info("{s}", .{child});
+
+                    return error.NotFound;
+                }, root)).Visited.value;
+            },
+            .Value => |val| {
+                if (std.mem.eql(u8, child, "TYPE")) {
+                    return val.kind.*;
+                }
+
+                switch (val.kind.*) {
+                    .Struct => |str| {
+                        const v = str.values.getPtr(child) orelse {
+                            std.log.info("{s}", .{child});
+
+                            return error.NotFound;
+                        };
+
+                        var field = (try self.visitNode(v, root)).Visited.value;
+                        if (field == .FunctionData) {
+                            return .{
+                                .ValueMethod = .{
+                                    .val = val.val,
+                                    .kind = val.kind,
+                                    .func = field.FunctionData,
+                                },
+                            };
+                        }
+                        return .{
+                            .Value = .{
+                                .val = self.builder.buildStructGEP(
+                                    str.kind,
+                                    root.getValue(self) orelse return error.InvalidValue,
+                                    @intCast(field.Prop.idx.?),
+                                    defaultPrefix ++ "prop",
+                                ),
+                                .kind = field.Prop.kind,
+                            },
+                        };
+                    },
+                    .PtrType => |ptr| {
+                        switch (ptr.child.*) {
+                            .Struct => |str| {
+                                const v = str.values.getPtr(child) orelse {
+                                    std.log.info("{s}", .{child});
+
+                                    return error.NotFound;
+                                };
+
+                                var field = (try self.visitNode(v, root)).Visited.value;
+                                if (field == .FunctionData) {
+                                    return .{
+                                        .ValueMethod = .{
+                                            .val = val.val,
+                                            .kind = val.kind,
+                                            .func = field.FunctionData,
+                                        },
+                                    };
+                                }
+
+                                var kind = try self.allocator.create(Value);
+                                kind.* = .{
+                                    .PtrType = .{
+                                        .child = field.Prop.kind,
+                                    },
+                                };
+
+                                return .{
+                                    .Value = .{
+                                        .val = self.builder.buildStructGEP(
+                                            str.kind,
+                                            root.getValue(self) orelse return error.InvalidValue,
+                                            @intCast(field.Prop.idx.?),
+                                            defaultPrefix ++ "prop",
+                                        ),
+                                        .kind = kind,
+                                    },
+                                };
+                            },
+                            else => {
+                                std.log.info("{s}, {s}", .{ @tagName(root.*), child });
+                                return error.NotFound;
+                            },
+                        }
+                    },
+                    else => {
+                        std.log.info("{s}, {s}", .{ @tagName(root.*), @tagName(val.kind.*) });
+                        return error.NotFound;
+                    },
+                }
+            },
+            .Include => |val| {
+                const incPtr = self.includes.getPtr(val.name) orelse unreachable;
+                return (try self.visitNode(incPtr.Visited.value.Struct.values.getPtr(child) orelse {
+                    std.log.info("{s}", .{val.name});
+
+                    return error.NotFound;
+                }, &incPtr.Visited.value)).Visited.value;
+            },
+            else => {
+                std.log.info("{s}, {s}", .{ @tagName(root.*), child });
+                return error.NotFound;
+            },
+        }
     }
 
     pub fn getNode(self: *Self, target: *InterpreterNode, child: []const u8) InterpreterError!*InterpreterNode {
@@ -587,7 +705,6 @@ pub const Interpreter = struct {
             .Unvisited => return try self.getNode(try self.visitNode(target, &target.Unvisited.ctx.current.Visited.value), child),
             .Visiting => return error.DoubleVisit,
             .Visited => {
-                std.log.info("{s}", .{target.Visited.name});
                 switch (target.Visited.value) {
                     .Struct => {
                         return target.Visited.value.Struct.values.getPtr(child) orelse {
@@ -605,7 +722,6 @@ pub const Interpreter = struct {
                             }
 
                             if (target.Visited.parent != null) {
-                                //std.log.info("child {s}", .{target.Visited.name});
                                 return self.getNode(target.Visited.parent.?, child);
                                 //var result = try self.allocator.create(InterpreterNode);
                                 //result.* = .{ .Visited = target.Visited.parent.?.Struct.values.get(child) orelse return error.NotFound };
@@ -632,8 +748,6 @@ pub const Interpreter = struct {
     }
 
     pub fn visitStmt(self: *Self, stmt: parser.Statement, ctx: *InterpreterContext) InterpreterError!?Value {
-        std.log.info("visits: {}", .{stmt});
-
         switch (stmt.data) {
             .Expression => |e| {
                 _ = try self.visitExpr(e, ctx);
@@ -645,16 +759,32 @@ pub const Interpreter = struct {
             .If => |e| {
                 var val = try self.visitExpr(e.check, ctx);
                 if (val.isTrue() orelse return error.InvalidValue) {
-                    for (e.body) |node| {
-                        if (try self.visitStmt(node, ctx)) |res| return res;
-                    }
+                    if (try self.visitStmt(e.body.*, ctx)) |res| return res;
                 } else {
                     if (e.bodyElse) |els| {
-                        for (els) |node| {
-                            if (try self.visitStmt(node, ctx)) |res| return res;
-                        }
+                        if (try self.visitStmt(els.*, ctx)) |res| return res;
                     }
                 }
+            },
+            .Definition => |def| {
+                var val = try self.visitExpr(def.value, ctx);
+
+                try val.setName(def.name);
+
+                try ctx.locals.put(def.name, val);
+            },
+            .For => |e| {
+                var list = try self.visitExpr(e.list, ctx);
+
+                for (0..list.ConstArray.len) |idx| {
+                    try ctx.locals.put(e.vName, list.ConstArray[idx]);
+
+                    if (try self.visitStmt(e.body.*, ctx)) |res| return res;
+                }
+            },
+            .Block => |e| {
+                for (e) |expr|
+                    if (try self.visitStmt(expr, ctx)) |res| return res;
             },
             else => return error.DumnDev,
         }
@@ -666,8 +796,7 @@ pub const Interpreter = struct {
         if (ctx.function != null) {
             var lParams = try self.allocator.alloc(*const llvm.Value, params.len);
             for (lParams, params) |*lp, *p| {
-                //std.log.info("FAILED {s}", .{@tagName(p.*)});
-                lp.* = p.getPtr(self) orelse self.context.intType(0).constNull();
+                lp.* = p.getValue(self) orelse self.context.intType(1).constNull();
             }
 
             if (func.FunctionData.callKind == .Ext) {
@@ -709,7 +838,7 @@ pub const Interpreter = struct {
                 var newName = try self.allocator.dupeZ(u8, func.FunctionData.name);
                 defer self.allocator.free(newName);
 
-                var resultfn = self.builder.buildLoad(func.FunctionData.impl.?.typeOf(), func.FunctionData.impl.?, "Load");
+                var resultfn = self.builder.buildLoad(func.FunctionData.impls.get("()").?.typeOf(), func.FunctionData.impls.get("()").?, "Load");
 
                 var resultCall = self.builder.buildCall(
                     func.FunctionData.implkind.?,
@@ -727,7 +856,7 @@ pub const Interpreter = struct {
                 };
             }
 
-            var impl = try self.implFunc(func, params);
+            var impl = try self.implFunc(func, params, false);
 
             var resultCall = self.builder.buildCall(
                 func.FunctionData.implkind.?,
@@ -757,9 +886,7 @@ pub const Interpreter = struct {
             try func.FunctionData.context.locals.put(item.key_ptr.*, item.value_ptr.*);
         }
 
-        for (func.FunctionData.conts.?) |node| {
-            if (try self.visitStmt(node, &func.FunctionData.context)) |res| return res;
-        }
+        if (try self.visitStmt(func.FunctionData.conts.?.*, &func.FunctionData.context)) |res| return res;
 
         return error.NoReturn;
     }
@@ -780,17 +907,58 @@ pub const Interpreter = struct {
                             .kind = target,
                         },
                     },
-                    .Value => |v| return .{
-                        .Value = .{
-                            .val = self.builder.buildIntCast2(v.val, target.getType(self).?, .False, defaultPrefix ++ "IntCast"),
-                            .kind = target,
+                    .Builtin => |v| .{
+                        switch (v) {
+                            .FalseValue => return .{
+                                .Value = .{
+                                    .val = target.getType(self).?.constInt(0, .False),
+                                    .kind = target,
+                                },
+                            },
+                            .TrueValue => return .{
+                                .Value = .{
+                                    .val = target.getType(self).?.constInt(1, .False),
+                                    .kind = target,
+                                },
+                            },
+                            else => return error.BadCast,
                         },
+                    },
+                    .Value => |v| switch (v.kind.*) {
+                        .IntType => return .{
+                            .Value = .{
+                                .val = self.builder.buildIntCast2(v.val, target.getType(self).?, .False, defaultPrefix ++ "IntCast"),
+                                .kind = target,
+                            },
+                        },
+                        .RealType => return .{
+                            .Value = .{
+                                .val = self.builder.buildFPToSI(v.val, target.getType(self).?, defaultPrefix ++ "IntCast"),
+                                .kind = target,
+                            },
+                        },
+                        else => return error.BadCast,
                     },
                     else => return error.BadCast,
                 }
             },
             .RealType => {
                 switch (value.*) {
+                    .Value => |v| switch (v.kind.*) {
+                        .IntType => return .{
+                            .Value = .{
+                                .val = self.builder.buildSIToFP(v.val, target.getType(self).?, defaultPrefix ++ "RealCast"),
+                                .kind = target,
+                            },
+                        },
+                        .RealType => return .{
+                            .Value = .{
+                                .val = self.builder.buildFPExt(v.val, target.getType(self).?, defaultPrefix ++ "RealCast"),
+                                .kind = target,
+                            },
+                        },
+                        else => return error.BadCast,
+                    },
                     .ConstInt => |v| return .{
                         .Value = .{
                             .val = target.getType(self).?.constReal(@floatFromInt(v)),
@@ -824,9 +992,15 @@ pub const Interpreter = struct {
     }
 
     pub fn visitExpr(self: *Self, expr: parser.Expression, ctx: *InterpreterContext) InterpreterError!Value {
-        std.log.info("visite: {}", .{expr});
-
         switch (expr.data) {
+            .Comptime => |comp| {
+                var tmpCtx = try ctx.dupe(ctx.current);
+                tmpCtx.function = null;
+
+                return (try self.visitStmt(comp.stmt.*, &tmpCtx)) orelse .{
+                    .Builtin = .VoidType,
+                };
+            },
             .Operation => |oper| {
                 const values = oper.values;
                 var eValues = try self.allocator.alloc(Value, oper.values.len);
@@ -857,6 +1031,25 @@ pub const Interpreter = struct {
                         }
 
                         switch (func.*) {
+                            .ValueMethod => |vm| {
+                                var params = try self.allocator.alloc(Value, values.len);
+                                params[0] = .{
+                                    .Value = .{
+                                        .val = vm.val,
+                                        .kind = vm.kind,
+                                    },
+                                };
+
+                                for (params[1..], 1..) |*val, idx| {
+                                    val.* = try self.visitExpr(values[idx], ctx);
+                                }
+
+                                var fd = .{
+                                    .FunctionData = vm.func,
+                                };
+
+                                return self.implCall(&fd, params, ctx);
+                            },
                             .FunctionData => {
                                 var params = try self.allocator.alloc(Value, values.len - 1);
                                 for (params, 1..) |*val, idx| {
@@ -870,6 +1063,62 @@ pub const Interpreter = struct {
                                     var val = try self.visitExpr(values[1], ctx);
                                     std.log.err("Compile error: {?s}", .{val.getString()});
                                     std.c.exit(1);
+                                },
+                                .AddDefFn => {
+                                    var cls = try self.allocator.create(Value);
+                                    cls.* = try self.visitExpr(values[1], ctx);
+                                    var name = try self.allocator.create(Value);
+                                    name.* = try self.visitExpr(values[2], ctx);
+                                    var value = try self.visitExpr(values[3], ctx);
+
+                                    const namev = name.getString() orelse return error.BadString;
+
+                                    try value.setName(namev);
+
+                                    try cls.Struct.values.put(namev, .{
+                                        .Visited = .{
+                                            .name = namev,
+                                            .parent = @fieldParentPtr(
+                                                InterpreterNode,
+                                                "Visited",
+                                                @fieldParentPtr(InterpreterNode.VisitedImpl, "value", cls),
+                                            ),
+                                            .value = value,
+                                        },
+                                    });
+
+                                    if (value == .Prop) {
+                                        var iter = cls.Struct.values.iterator();
+                                        var propIdx: usize = 0;
+                                        var props = std.ArrayList(*const llvm.Type).init(self.allocator);
+
+                                        while (iter.next()) |kv| {
+                                            if (kv.value_ptr.* != .Visited) continue;
+
+                                            if (kv.value_ptr.Visited.value == .Prop) {
+                                                var kind = kv.value_ptr.Visited.value.Prop.kind.*;
+                                                kv.value_ptr.Visited.value.Prop.idx = propIdx;
+
+                                                try props.append(kind.getType(self) orelse return error.InvalidType);
+
+                                                propIdx += 1;
+                                            }
+                                        }
+
+                                        cls.Struct.kind = self.context.structType(props.items.ptr, @intCast(props.items.len), .False);
+                                    }
+
+                                    return value;
+                                },
+                                .GetPropFn => {
+                                    var root = try self.allocator.create(Value);
+                                    root.* = try self.visitExpr(values[1], ctx);
+                                    var name = try self.allocator.create(Value);
+                                    name.* = try self.visitExpr(values[2], ctx);
+
+                                    const namev = name.getString() orelse return error.BadString;
+
+                                    return try self.getProp(root, namev);
                                 },
                                 else => return error.InvalidCall,
                             },
@@ -888,12 +1137,14 @@ pub const Interpreter = struct {
                                             .in = kind.in,
                                             .out = kind.out,
                                         },
-                                        .impl = b.val,
+                                        .impls = std.StringHashMap(*const llvm.Value).init(self.allocator),
                                         .implkind = kind.fnkind,
                                         .context = try ctx.dupe(ctx.current),
                                         .callKind = .Ptr,
                                         .conts = null,
                                     };
+
+                                    try data.impls.put("()", b.val);
 
                                     var funcData = try self.allocator.create(Value);
                                     funcData.* = Value{
@@ -925,139 +1176,15 @@ pub const Interpreter = struct {
                     .Access => {
                         var root = try self.allocator.create(Value);
                         root.* = try self.visitExpr(values[0], ctx);
-                        switch (root.*) {
-                            .FunctionData => |fnc| {
-                                if (std.mem.eql(u8, values[1].data.Ident.name, "TYPE")) {
-                                    return .{
-                                        .FunctionType = .{
-                                            .in = fnc.kind.in,
-                                            .out = fnc.kind.out,
-                                            .kind = undefined,
-                                            .fnkind = undefined,
-                                        },
-                                    };
-                                }
-
-                                return error.NotFound;
-                            },
-                            .Struct => |str| {
-                                if (std.mem.eql(u8, values[1].data.Ident.name, "SIZE")) {
-                                    var sizeType = try self.allocator.create(Value);
-                                    sizeType.* = .{
-                                        .IntType = .{
-                                            .size = 64,
-                                            .signed = false,
-                                        },
-                                    };
-
-                                    const gep = self.builder.buildStructGEP(
-                                        str.kind.arrayType(0),
-                                        self.context.pointerType(0).constNull(),
-                                        @intCast(1),
-                                        defaultPrefix ++ "SizePtr",
-                                    );
-
-                                    return .{
-                                        .Value = .{
-                                            .val = self.builder.buildPtrToInt(
-                                                gep,
-                                                self.context.intType(64),
-                                                defaultPrefix ++ "Size",
-                                            ),
-                                            .kind = sizeType,
-                                        },
-                                    };
-                                }
-
-                                return (try self.visitNode(root.Struct.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value;
-                            },
-                            .Value => |val| {
-                                if (std.mem.eql(u8, values[1].data.Ident.name, "TYPE")) {
-                                    return val.kind.*;
-                                }
-
-                                switch (val.kind.*) {
-                                    .Struct => |str| {
-                                        var field = (try self.visitNode(str.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value;
-                                        std.log.info("prop: {}", .{field.Prop.kind});
-                                        return .{
-                                            .Value = .{
-                                                .val = self.builder.buildStructGEP(
-                                                    str.kind,
-                                                    root.getPtr(self) orelse return error.InvalidValue,
-                                                    @intCast(field.Prop.idx),
-                                                    defaultPrefix ++ "prop",
-                                                ),
-                                                .kind = field.Prop.kind,
-                                            },
-                                        };
-                                    },
-                                    .PtrType => |ptr| {
-                                        switch (ptr.child.*) {
-                                            .Struct => |str| {
-                                                var field = (try self.visitNode(str.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value;
-                                                var kind = try self.allocator.create(Value);
-                                                kind.* = .{
-                                                    .PtrType = .{
-                                                        .child = field.Prop.kind,
-                                                    },
-                                                };
-
-                                                //std.log.info("prop: {}", .{field.Prop.kind});
-                                                return .{
-                                                    .Value = .{
-                                                        .val = self.builder.buildStructGEP(
-                                                            str.kind,
-                                                            root.getPtr(self) orelse return error.InvalidValue,
-                                                            @intCast(field.Prop.idx),
-                                                            defaultPrefix ++ "prop",
-                                                        ),
-                                                        .kind = kind,
-                                                    },
-                                                };
-                                            },
-                                            else => return error.NotFound,
-                                        }
-                                    },
-                                    else => {
-                                        std.log.info("{s}, {s}", .{ @tagName(root.*), @tagName(val.kind.*) });
-                                        return error.NotFound;
-                                    },
-                                }
-                            },
-                            .Include => |val| {
-                                const incPtr = self.includes.getPtr(val.name) orelse unreachable;
-                                return (try self.visitNode(incPtr.Visited.value.Struct.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, &incPtr.Visited.value)).Visited.value;
-                            },
-                            .Ptr => |val| {
-                                if (std.mem.eql(u8, values[1].data.Ident.name, "TYPE")) {
-                                    return val.kind.*;
-                                }
-
-                                switch (val.kind.*) {
-                                    .Struct => |str| {
-                                        var field = (try self.visitNode(str.values.getPtr(values[1].data.Ident.name) orelse return error.NotFound, root)).Visited.value;
-                                        //std.log.info("prop: {}", .{field.Prop.kind});
-                                        return .{
-                                            .Ptr = .{
-                                                .val = self.builder.buildStructGEP(
-                                                    str.kind,
-                                                    root.getPtr(self) orelse return error.InvalidValue,
-                                                    @intCast(field.Prop.idx),
-                                                    defaultPrefix ++ "prop",
-                                                ),
-                                                .kind = field.Prop.kind,
-                                            },
-                                        };
-                                    },
-                                    else => return error.NotFound,
-                                }
-                            },
-                            else => {
-                                std.log.info("{s}, {s}", .{ @tagName(root.*), values[1].data.Ident.name });
-                                return error.NotFound;
-                            },
+                        if (std.mem.eql(u8, values[1].data.Ident.name, "NAME")) {
+                            return .{
+                                .ConstString = root.getName() orelse "",
+                            };
                         }
+
+                        var name = values[1].data.Ident.name;
+
+                        return try self.getProp(root, name);
                     },
                     .Assign => {
                         var assignee = try self.allocator.create(Value);
@@ -1072,24 +1199,9 @@ pub const Interpreter = struct {
                         value.* = try self.visitExpr(values[0], ctx);
 
                         switch (value.*) {
-                            .Ptr => {
-                                var kind = try self.allocator.create(Value);
-                                kind.* = .{
-                                    .PtrType = .{
-                                        .child = value.Ptr.kind,
-                                    },
-                                };
-
-                                return .{
-                                    .Value = .{
-                                        .val = value.Ptr.val,
-                                        .kind = kind,
-                                    },
-                                };
-                            },
                             .FunctionData => |data| {
                                 var kind = try self.allocator.create(Value);
-                                var val = try self.implFunc(value, null);
+                                var val = try self.implFunc(value, null, false);
 
                                 kind.* = .{
                                     .FunctionType = .{
@@ -1114,7 +1226,7 @@ pub const Interpreter = struct {
                         var value = try self.allocator.create(Value);
                         value.* = try self.visitExpr(values[0], ctx);
                         switch (value.*) {
-                            .FunctionType, .Struct, .ArrayType, .IntType, .RealType => {
+                            .FunctionType, .PtrType, .Struct, .ArrayType, .IntType, .RealType => {
                                 return .{
                                     .PtrType = .{
                                         .child = value,
@@ -1122,9 +1234,6 @@ pub const Interpreter = struct {
                                 };
                             },
                             .Value => {
-                                return value.toValue(self) orelse return error.InvalidValue;
-                            },
-                            .Ptr => {
                                 return value.toValue(self) orelse return error.InvalidValue;
                             },
                             .Builtin => |b| {
@@ -1152,7 +1261,7 @@ pub const Interpreter = struct {
                         value.* = try self.visitExpr(values[0], ctx);
 
                         switch (value.*) {
-                            .Struct, .IntType => return .{
+                            .Struct, .IntType, .PtrType, .ArrayType => return .{
                                 .ArrayType = .{
                                     .child = value,
                                     .size = if (values.len <= 1) null else (try self.visitExpr(values[1], ctx)).ConstInt,
@@ -1162,66 +1271,51 @@ pub const Interpreter = struct {
                                 switch (val.kind.*) {
                                     .PtrType => |ptr| {
                                         switch (ptr.child.*) {
+                                            .Struct => {
+                                                var idx = try self.allocator.create(Value);
+                                                idx.* = try self.visitExpr(values[1], ctx);
+
+                                                var params = try self.allocator.alloc(Value, 2);
+                                                params[0] = value.*;
+                                                params[1] = idx.*;
+
+                                                var tmp = ptr.child.*;
+
+                                                var func = try self.allocator.create(Value);
+                                                func.* = self.getProp(&tmp, "[]") catch |err| {
+                                                    std.log.info("{} dosent have []", .{tmp});
+                                                    return err;
+                                                };
+
+                                                return self.implCall(func, params, ctx);
+                                            },
                                             .ArrayType => {
                                                 var idx = try self.allocator.create(Value);
                                                 idx.* = try self.visitExpr(values[1], ctx);
 
+                                                const kind = try self.allocator.create(Value);
+                                                kind.* = .{
+                                                    .PtrType = .{
+                                                        .child = ptr.child.ArrayType.child,
+                                                    },
+                                                };
+
                                                 return .{
-                                                    .Ptr = .{
+                                                    .Value = .{
                                                         .val = self.builder.buildInBoundsGEP(
                                                             ptr.child.ArrayType.child.getType(self) orelse return error.InvalidType,
-                                                            value.getPtr(self) orelse return error.InvalidValue,
+                                                            value.getValue(self) orelse return error.InvalidValue,
                                                             &[_]*const llvm.Value{
                                                                 idx.getValue(self) orelse return error.InvalidValue,
                                                             },
                                                             1,
                                                             defaultPrefix ++ "access",
                                                         ),
-                                                        .kind = ptr.child.ArrayType.child,
+                                                        .kind = kind,
                                                     },
                                                 };
                                             },
                                             else => {},
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            },
-                            .Ptr => |ptr| {
-                                switch (ptr.kind.*) {
-                                    .ArrayType => {
-                                        var idx = try self.allocator.create(Value);
-                                        idx.* = try self.visitExpr(values[1], ctx);
-                                        switch (idx.*) {
-                                            .ConstInt => {
-                                                return .{
-                                                    .Ptr = .{
-                                                        .val = self.builder.buildStructGEP(
-                                                            ptr.kind.getType(self) orelse return error.InvalidType,
-                                                            value.getPtr(self) orelse return error.InvalidValue,
-                                                            @intCast(idx.ConstInt),
-                                                            defaultPrefix ++ "access",
-                                                        ),
-                                                        .kind = ptr.kind.ArrayType.child,
-                                                    },
-                                                };
-                                            },
-                                            else => {
-                                                return .{
-                                                    .Ptr = .{
-                                                        .val = self.builder.buildInBoundsGEP(
-                                                            ptr.kind.getType(self) orelse return error.InvalidType,
-                                                            value.getPtr(self) orelse return error.InvalidValue,
-                                                            &[_]*const llvm.Value{
-                                                                idx.getValue(self) orelse return error.InvalidValue,
-                                                            },
-                                                            1,
-                                                            defaultPrefix ++ "access",
-                                                        ),
-                                                        .kind = ptr.kind.ArrayType.child,
-                                                    },
-                                                };
-                                            },
                                         }
                                     },
                                     else => {},
@@ -1245,10 +1339,10 @@ pub const Interpreter = struct {
                                 };
 
                                 return .{
-                                    .Ptr = .{
+                                    .Value = .{
                                         .val = self.builder.buildInBoundsGEP(
                                             self.context.intType(8),
-                                            value.getPtr(self) orelse return error.InvalidValue,
+                                            value.getValue(self) orelse return error.InvalidValue,
                                             &[_]*const llvm.Value{
                                                 idx.getValue(self) orelse return error.InvalidValue,
                                             },
@@ -1259,9 +1353,16 @@ pub const Interpreter = struct {
                                     },
                                 };
                             },
+                            .ConstArray => |arr| {
+                                var idx = try self.allocator.create(Value);
+                                idx.* = try self.visitExpr(values[1], ctx);
+
+                                return arr[idx.ConstInt];
+                            },
                             else => {},
                         }
-                        std.log.info("{s}", .{@tagName(value.*)});
+
+                        std.log.info("{s}", .{value.*});
 
                         return error.DumnDev;
                     },
@@ -1291,6 +1392,11 @@ pub const Interpreter = struct {
 
                 if (std.mem.eql(u8, ident.name, "ERROR"))
                     return .{ .Builtin = .ErrorFn };
+
+                if (std.mem.eql(u8, ident.name, "ADD_DEF"))
+                    return .{ .Builtin = .AddDefFn };
+                if (std.mem.eql(u8, ident.name, "GET_PROP"))
+                    return .{ .Builtin = .GetPropFn };
 
                 if (ident.name[0] == 'f') {
                     if (std.fmt.parseInt(c_uint, ident.name[1..], 0) catch null) |val| {
@@ -1326,6 +1432,15 @@ pub const Interpreter = struct {
                     return .{
                         .IntType = .{
                             .size = 64,
+                            .signed = false,
+                        },
+                    };
+                }
+
+                if (std.mem.eql(u8, ident.name, "bool")) {
+                    return .{
+                        .IntType = .{
+                            .size = 1,
                             .signed = false,
                         },
                     };
@@ -1372,7 +1487,7 @@ pub const Interpreter = struct {
                         },
                         .context = try ctx.dupe(ctx.current),
                         .conts = body,
-                        .impl = null,
+                        .impls = std.StringHashMap(*const llvm.Value).init(self.allocator),
                         .implkind = null,
                         .callKind = .Std,
                     };
@@ -1399,7 +1514,7 @@ pub const Interpreter = struct {
                         },
                         .context = try ctx.dupe(ctx.current),
                         .conts = null,
-                        .impl = null,
+                        .impls = std.StringHashMap(*const llvm.Value).init(self.allocator),
                         .implkind = null,
                         .callKind = .Ext,
                     };
@@ -1436,7 +1551,6 @@ pub const Interpreter = struct {
                 for (argsTypes, result.FunctionType.in) |*arg, in| {
                     var tmp = try self.allocator.create(Value);
                     tmp.* = try self.visitExpr(in.kind.?.*, ctx);
-                    //std.log.info("{s}", .{in.name});
                     arg.* = tmp.getType(self) orelse return error.InvalidType;
                 }
                 var functionType = llvm.functionType(result.FunctionType.out.getType(self) orelse return error.InvalidType, argsTypes.ptr, @intCast(argsTypes.len), .False);
@@ -1452,19 +1566,20 @@ pub const Interpreter = struct {
                 return self.visitExpr(data.expr.*, ctx);
             },
             .Struct => |cls| {
-                //std.log.info("{}", .{ctx.current});
-
                 var root = try self.allocator.create(InterpreterNode);
+                var structData = try self.allocator.create(StructDataType);
+                structData.* = .{
+                    .values = std.StringHashMap(InterpreterNode).init(self.allocator),
+                    .context = try ctx.dupe(root),
+                    .parent = ctx.current,
+                    .kind = self.context.voidType(),
+                };
+
                 root.* = .{
                     .Visited = .{
                         .name = defaultPrefix ++ "Struct",
                         .value = Value{
-                            .Struct = .{
-                                .values = std.StringHashMap(InterpreterNode).init(self.allocator),
-                                .context = try ctx.dupe(root),
-                                .parent = ctx.current,
-                                .kind = self.context.voidType(),
-                            },
+                            .Struct = structData,
                         },
                         .parent = ctx.current,
                     },
@@ -1523,26 +1638,39 @@ pub const Interpreter = struct {
                     var kind = try self.allocator.create(Value);
                     kind.* = try self.visitExpr(create.kind.*, ctx);
 
-                    var lKind = kind.getType(self) orelse return error.InvalidType;
-                    const result = .{
-                        .Ptr = .{
-                            .val = self.module.addGlobal(lKind, defaultPrefix ++ "Global"),
-                            .kind = kind,
+                    var pkind = try self.allocator.create(Value);
+                    pkind.* = .{
+                        .PtrType = .{
+                            .child = kind,
                         },
                     };
 
-                    result.Ptr.val.setInitializer(lKind.constNull());
+                    var lKind = kind.getType(self) orelse return error.InvalidType;
+                    const result = .{
+                        .Value = .{
+                            .val = self.module.addGlobal(lKind, defaultPrefix ++ "Global"),
+                            .kind = pkind,
+                        },
+                    };
+
+                    result.Value.val.setInitializer(lKind.constNull());
 
                     return result;
                 }
                 var kind = try self.allocator.create(Value);
                 kind.* = try self.visitExpr(create.kind.*, ctx);
+                var pkind = try self.allocator.create(Value);
+                pkind.* = .{
+                    .PtrType = .{
+                        .child = kind,
+                    },
+                };
 
                 var lKind = kind.getType(self) orelse return error.InvalidType;
                 return .{
-                    .Ptr = .{
+                    .Value = .{
                         .val = self.builder.buildAlloca(lKind, defaultPrefix ++ "Value"),
-                        .kind = kind,
+                        .kind = pkind,
                     },
                 };
             },
@@ -1560,21 +1688,23 @@ pub const Interpreter = struct {
                     try self.includes.put(file, .{ .Bad = 0 });
 
                     const rootNode = self.includes.getPtr(file) orelse unreachable;
+                    const structData = try self.allocator.create(StructDataType);
+                    structData.* = .{
+                        .values = std.StringHashMap(InterpreterNode).init(self.allocator),
+                        .context = InterpreterContext{
+                            .locals = std.StringHashMap(Value).init(self.allocator),
+                            .current = rootNode,
+                            .root = rootNode,
+                        },
+                        .parent = null,
+                        .kind = undefined,
+                    };
                     rootNode.* = .{
                         .Visited = .{
                             .name = file,
                             .parent = null,
                             .value = .{
-                                .Struct = .{
-                                    .values = std.StringHashMap(InterpreterNode).init(self.allocator),
-                                    .context = InterpreterContext{
-                                        .locals = std.StringHashMap(Value).init(self.allocator),
-                                        .current = rootNode,
-                                        .root = rootNode,
-                                    },
-                                    .parent = null,
-                                    .kind = undefined,
-                                },
+                                .Struct = structData,
                             },
                         },
                     };
@@ -1596,9 +1726,17 @@ pub const Interpreter = struct {
                     },
                 };
             },
-            else => {
-                std.log.debug("visit {s}", .{expr});
-                return error.DumnDev;
+            .Prop => |node| {
+                var kind = try self.allocator.create(Value);
+
+                kind.* = try self.visitExpr(node.kind.*, ctx);
+
+                return .{
+                    .Prop = .{
+                        .idx = null,
+                        .kind = kind,
+                    },
+                };
             },
         }
     }
@@ -1615,7 +1753,7 @@ pub const Interpreter = struct {
                 var targ = target.Unvisited;
 
                 target.* = .{
-                    .Visiting = targ.name,
+                    .Visiting = try self.allocator.dupe(u8, targ.name),
                 };
 
                 var result = try self.visitExpr(targ.value.*, &targ.ctx);
@@ -1640,8 +1778,6 @@ pub const Interpreter = struct {
     }
 
     pub fn implStmt(self: *Self, stmt: *const parser.Statement, ctx: *InterpreterContext) InterpreterError!void {
-        std.log.info("impls: {}", .{stmt});
-
         switch (stmt.data) {
             .Return => |ret| {
                 if (ret) |val| {
@@ -1661,6 +1797,11 @@ pub const Interpreter = struct {
             .Expression => |expr| {
                 _ = try self.visitExpr(expr, ctx);
             },
+            .Block => |data| {
+                for (data) |subStmt| {
+                    try self.implStmt(&subStmt, ctx);
+                }
+            },
             .While => |data| {
                 var headBB = self.context.appendBasicBlock(ctx.function.?, "whileHead");
                 var bodyBB = self.context.appendBasicBlock(ctx.function.?, "whileBody");
@@ -1676,9 +1817,7 @@ pub const Interpreter = struct {
                 _ = self.builder.buildCondBr(condV, bodyBB, mergeBB);
                 self.builder.positionBuilderAtEnd(bodyBB);
 
-                for (data.body) |subStmt| {
-                    try self.implStmt(&subStmt, ctx);
-                }
+                try self.implStmt(data.body, ctx);
 
                 _ = self.builder.buildBr(headBB);
                 self.builder.positionBuilderAtEnd(mergeBB);
@@ -1695,20 +1834,43 @@ pub const Interpreter = struct {
                 _ = self.builder.buildCondBr(condV, bodyBB, elseBB);
                 self.builder.positionBuilderAtEnd(bodyBB);
 
-                for (data.body) |subStmt| {
-                    try self.implStmt(&subStmt, ctx);
-                }
+                try self.implStmt(data.body, ctx);
                 _ = self.builder.buildBr(mergeBB);
 
                 self.builder.positionBuilderAtEnd(elseBB);
                 if (data.bodyElse) |body| {
-                    for (body) |subStmt| {
-                        try self.implStmt(&subStmt, ctx);
-                    }
+                    try self.implStmt(body, ctx);
                 }
                 _ = self.builder.buildBr(mergeBB);
 
                 self.builder.positionBuilderAtEnd(mergeBB);
+            },
+            .For => |data| {
+                var list = try self.visitExpr(data.list, ctx);
+                switch (list) {
+                    .ConstArray => |l| {
+                        var sctx = try ctx.dupe(ctx.current);
+                        for (0..l.len) |idx| {
+                            try sctx.locals.put(data.vName, l[idx]);
+
+                            try self.implStmt(data.body, &sctx);
+                        }
+                    },
+                    //.Value => |l| {
+                    //    var sctx = try ctx.dupe(ctx.current);
+                    //    for (0..l.len) |idx| {
+                    //        try sctx.locals.put(data.vName, l[idx]);
+
+                    //        for (data.body) |subStmt| {
+                    //            try self.implStmt(&subStmt, &sctx);
+                    //        }
+                    //    }
+                    //},
+                    else => {
+                        std.debug.print("{}\n", .{data});
+                        return error.DumnDev;
+                    },
+                }
             },
             //else => |data| {
             //    std.debug.print("{}\n", .{data});
@@ -1717,12 +1879,36 @@ pub const Interpreter = struct {
         }
     }
 
-    pub fn implFunc(self: *Self, target: *Value, params: ?[]Value) InterpreterError!*const llvm.Value {
+    pub fn implFunc(self: *Self, target: *Value, params: ?[]Value, forceDef: bool) InterpreterError!*const llvm.Value {
         switch (target.*) {
             .FunctionData => |func| {
-                if (func.impl) |impl| return impl;
+                var impl_name: []const u8 = try self.allocator.dupe(u8, "");
 
-                std.log.info("impl: {s}", .{func.name});
+                var name = try self.allocator.dupe(u8, "(");
+
+                if (params) |ps| {
+                    for (ps) |*param| {
+                        if (param.* != .Struct) continue;
+
+                        const old = name;
+                        defer self.allocator.free(old);
+                        name = try std.mem.concat(self.allocator, u8, &.{ old, param.getName().?, "," });
+                    }
+
+                    const old = name;
+                    defer self.allocator.free(old);
+                    const start = if (name.len == 1) old else old[0 .. old.len - 1];
+
+                    name = try std.mem.concat(self.allocator, u8, &.{ start, ")" });
+                } else {
+                    const old = name;
+                    defer self.allocator.free(old);
+                    name = try std.mem.concat(self.allocator, u8, &.{ old, ")" });
+                }
+
+                if (func.impls.get(name)) |impl| return impl;
+
+                impl_name = name;
 
                 var ctx = try func.context.dupe(func.context.current);
 
@@ -1731,17 +1917,16 @@ pub const Interpreter = struct {
                 var argsTypesValues = try self.allocator.alloc(Value, func.kind.in.len);
                 for (argsTypesValues, argsTypes, func.kind.in) |*argValue, *arg, in| {
                     argValue.* = try self.visitExpr(in.kind.?.*, &ctx);
-                    //std.log.info("{s}", .{in.name});
                     arg.* = argValue.getType(self) orelse return error.InvalidType;
                 }
                 var functionType = llvm.functionType(out, argsTypes.ptr, @intCast(argsTypes.len), .False);
 
                 func.implkind = functionType;
 
-                var newName = try self.allocator.dupeZ(u8, func.name);
+                var newName = try std.mem.concat(self.allocator, u8, &.{ func.name, if (forceDef) "" else impl_name, "\x00" });
                 defer self.allocator.free(newName);
 
-                var function = self.module.addFunction(newName.ptr, functionType);
+                var function = self.module.addFunction(@ptrCast(newName.ptr), functionType);
 
                 for (func.kind.in, 0..) |arg, idx| {
                     if (argsTypesValues[idx] == .Builtin) {
@@ -1761,15 +1946,15 @@ pub const Interpreter = struct {
                 self.builder.positionBuilderAtEnd(bb);
 
                 ctx.function = function;
-                func.impl = function;
+                try func.impls.put(impl_name, function);
 
                 if (func.conts) |conts| {
-                    for (conts) |impl| {
-                        try self.implStmt(&impl, &ctx);
-                    }
+                    try self.implStmt(conts, &ctx);
                 }
 
                 self.builder.positionBuilderAtEnd(oldBB);
+
+                //function.setFunctionName(try std.mem.concat(self.allocator, u8, &.{ func.name, impl_name }));
 
                 return function;
             },
@@ -1784,9 +1969,13 @@ pub const Interpreter = struct {
         switch (target.*) {
             .Bad => return error.BadNode,
             .Visited => {
-                return self.implFunc(&target.Visited.value, null);
+                return self.implFunc(&target.Visited.value, null, false);
             },
-            .Visiting => return error.DoubleVisit,
+            .Visiting => {
+                std.log.info("{s}", .{target.Visiting});
+
+                return error.DoubleVisit;
+            },
             .Unvisited => return try self.implNode(try self.visitNode(target, parent), parent),
         }
     }
